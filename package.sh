@@ -75,7 +75,25 @@ else
   fi
 fi
 
-# ---- 3. build the DMG --------------------------------------------------------
+# ---- 3. notarize the app, before it goes into the DMG ------------------------
+# Order matters. Stapling the app *after* the DMG is built leaves the copy
+# inside the DMG — the one users actually drag to /Applications — without a
+# ticket, so its first launch needs a live check with Apple and fails offline.
+if [ "$DO_NOTARIZE" -eq 1 ]; then
+  cyan "notarizing the app (a few minutes)…"
+  APP_ZIP="$(mktemp -d)/$APP_NAME.zip"
+  ditto -c -k --keepParent "$APP" "$APP_ZIP"
+
+  if xcrun notarytool submit "$APP_ZIP" --keychain-profile "$NOTARY_PROFILE" --wait; then
+    xcrun stapler staple "$APP"
+  else
+    warn "app notarization failed. Check the log with:"
+    echo "         xcrun notarytool log <submission-id> --keychain-profile $NOTARY_PROFILE"
+    exit 1
+  fi
+fi
+
+# ---- 4. build the DMG --------------------------------------------------------
 cyan "building $DMG"
 rm -rf "$DIST" && mkdir -p "$DIST"
 
@@ -95,14 +113,15 @@ if [ -n "$IDENTITY" ]; then
   codesign --force --sign "$IDENTITY" "$DMG"
 fi
 
-# ---- 4. notarize -------------------------------------------------------------
+# ---- 5. notarize the DMG itself ----------------------------------------------
+# The app inside is already stapled; this ticket covers the disk image so the
+# download itself passes Gatekeeper too.
 if [ "$DO_NOTARIZE" -eq 1 ]; then
-  cyan "submitting for notarization (this usually takes a few minutes)…"
+  cyan "notarizing the disk image…"
   if xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait; then
     cyan "stapling…"
     xcrun stapler staple "$DMG"
-    xcrun stapler staple "$APP"
-    green "notarized and stapled."
+    green "notarized and stapled (app and disk image)."
   else
     warn "notarization failed. Check the log with:"
     echo "         xcrun notarytool log <submission-id> --keychain-profile $NOTARY_PROFILE"
@@ -110,7 +129,7 @@ if [ "$DO_NOTARIZE" -eq 1 ]; then
   fi
 fi
 
-# ---- 5. report ---------------------------------------------------------------
+# ---- 6. report ---------------------------------------------------------------
 echo
 green "packaged $DMG  ($(du -h "$DMG" | cut -f1))"
 echo
