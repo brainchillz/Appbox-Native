@@ -1,63 +1,81 @@
-# AppBox Native
+# AppBox
 
-A native macOS app and CLI for running **LXC-style system containers** on Apple
-Silicon, built on Apple's [`container`](https://github.com/apple/container) tool.
+**LXC-style Linux containers on Apple Silicon, from your menu bar.**
 
-A *box* is a named, persistent Linux machine: you shell into it, install
-packages in it, and its state survives stop/start. A host directory is
-bind-mounted at `/data` so the data you can't lose outlives the container
-itself.
+A native macOS app and CLI built on Apple's
+[`container`](https://github.com/apple/container) tool. A *box* is a named,
+persistent Linux machine: you shell into it, install packages in it, and its
+state survives stop/start. A host directory is bind-mounted at `/data`, so the
+data you can't lose outlives the container itself.
 
-This is the Swift rewrite of the original [`appbox`](../appbox) shell script.
-The script still exists and still works — this repo is where the project
-continues.
+A persistent icon by the clock lists every box with its running state and a
+switch to flip it on or off. Create, provision, inspect and destroy boxes from a
+management window, and open a real shell in Terminal with one click.
 
 ---
 
-## What you get
-
-**A menu bar app.** A persistent icon by the clock with a dropdown listing every
-box, its running/stopped state, and a switch to flip it on or off. Create,
-inspect, provision and destroy boxes from a management window; open a real
-shell in Terminal with one click.
-
-**A CLI.** The same functionality from the command line, sharing the exact same
-engine — `AppBoxKit`. The GUI and the CLI cannot drift apart because there is
-only one implementation of what a box *is*.
-
 ## Requirements
 
-- Apple Silicon Mac, macOS 15+
-- Apple's `container` CLI — install the signed `.pkg` from
-  [github.com/apple/container/releases](https://github.com/apple/container/releases)
-  (there is no Homebrew cask)
-- Xcode 26 / Swift 6 to build
+- **Apple Silicon Mac** (M1 or later) running **macOS 15 or newer**
+- **Apple's `container` CLI** — install the signed `.pkg` from
+  [github.com/apple/container/releases](https://github.com/apple/container/releases).
+  There is no Homebrew cask. AppBox drives this tool; it is not optional.
 
-## Build
+To build from source you also need **Xcode 26 / Swift 6**.
 
-```sh
-./build-app.sh --release          # -> build/AppBox.app
-./build-app.sh --debug --run      # fast build, then launch
-cp -R build/AppBox.app /Applications/
-```
+## Install
 
-There is no `.xcodeproj`. SPM builds the executables and `build-app.sh`
-assembles the bundle, so the whole project builds from the command line.
+Download `AppBox-0.1.0.dmg` from the
+[latest release](https://github.com/brainchillz/Appbox-Native/releases/latest),
+open it, and drag **AppBox** to Applications.
 
-The app is **ad-hoc signed** — enough to run on the machine that built it.
-Distributing it to another Mac requires a Developer ID identity and
-notarization. It cannot be sandboxed (it spawns processes and reads
-`~/containers`), so there is no Mac App Store path.
+### Gatekeeper
 
-The `appbox` CLI is bundled inside the app at `Contents/Helpers/appbox`, so one
-download provides both interfaces.
+**This release is not notarized.** It carries an ad-hoc signature, which is
+enough to run but not enough to satisfy Gatekeeper. Because you downloaded the
+DMG through a browser, macOS attaches a quarantine flag and will refuse to open
+the app.
+
+Clear it after installing:
 
 ```sh
-swift build          # just the binaries
-swift test           # 32 tests
+xattr -dr com.apple.quarantine /Applications/AppBox.app
 ```
 
-## CLI usage
+Then open the app normally. On macOS 15+ the old Control-click → Open bypass no
+longer works; the alternative to the command above is System Settings →
+Privacy & Security → **Open Anyway**.
+
+If you build from source instead, none of this applies — locally built apps are
+never quarantined.
+
+### Install the command line tool
+
+Open the app, click the menu bar icon → gear icon → **Install**. This symlinks
+the `appbox` CLI (which ships inside the app bundle) onto your `PATH`.
+
+Do this **after** moving the app to /Applications — the symlink points at the
+app's location at install time, and the app warns you if you install while
+running from somewhere else.
+
+The installer shows every `appbox` on your `PATH` in the order your shell
+resolves them, so a shadowed install is visible rather than mysterious. If an
+existing `appbox` is in the way it is moved to `appbox.previous`, never deleted.
+
+## Using it
+
+### Menu bar
+
+Click the icon for the box list. Each row has a state dot, the distro, IP and
+resources, and an on/off switch. Click a row to open a shell. Hover for a menu
+with Follow Logs, Restart, Install Standard Toolset and Destroy.
+
+**Install Standard Toolset** ("provision") installs about 28 packages that base
+images don't ship — `curl`, `git`, `vim`, `sudo`, `dig`, `ip`, `htop`, `tmux`,
+`jq`, `tree`, `rsync`, `less`, `man` and friends. A fresh Ubuntu or Alpine box
+doesn't even have `curl` or `ping`. It's idempotent, so it's safe to re-run.
+
+### CLI
 
 ```
 appbox create        <name> [image|distro] [--full]   # uses your default distro if none given
@@ -69,96 +87,126 @@ appbox create-rocky  <name> [9|10|latest]             # latest = 10
 appbox create-arch   <name>                           # rolling — always latest
 
 appbox set-default   [distro|--clear]   # distro used by a bare `create`
-appbox provision     <name>             # install the standard CLI toolset
-appbox shell|exec|start|stop|restart|list|ip|info|destroy
+appbox provision     <name>             # install the standard toolset
+appbox shell         <name>             # interactive shell (auto-starts the box)
+appbox exec          <name> <cmd...>
+appbox start|stop|restart|list|ip|info|destroy <name>
 ```
 
-`--full` on any create command also installs the standard toolset. Version and
-name may be given in **either order** — `create-ubuntu web 24.04` and
-`create-ubuntu 24.04 web` are the same thing.
+`--full` on any create command also installs the standard toolset. The version
+and name may be given in **either order** — `create-ubuntu web 24.04` and
+`create-ubuntu 24.04 web` are equivalent.
+
+A bare `appbox create <name>` does not silently pick a distro. It uses
+`$APPBOX_IMAGE`, then the distro saved by `set-default`, and otherwise prints a
+menu and exits.
 
 ### Configuration
-
-All environment-overridable, and identical to the original script so both can
-coexist:
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `APPBOX_HOME` | `~/containers` | per-box host data |
 | `APPBOX_IMAGE` | *(unset)* | forces the image for a bare `create` |
-| `APPBOX_CONFIG_DIR` | `~/.config/appbox` | appbox's own config |
+| `APPBOX_CONFIG_DIR` | `~/.config/appbox` | AppBox's own config |
 | `APPBOX_CPUS` | `4` | default CPUs |
 | `APPBOX_MEMORY` | `2G` | default memory |
 | `APPBOX_DEFAULT_DISTRO` | *(unset)* | overrides the saved default |
 | `APPBOX_CONTAINER_BIN` | *(auto)* | explicit path to `container` |
 
-## Architecture
+## Distributions
 
-```
-Sources/AppBoxKit/     the engine — all policy lives here
-  Distro              distro → verified arm64 image, package manager
-  NameVersion         order-independent <name>/[version] parsing
-  PackageSets         the standard toolset, per package manager
-  Configuration       env vars + the saved default distro
-  ProcessRunner       locates and runs binaries (never via a login shell)
-  ContainerClient     typed wrapper over Apple's `container` CLI
-  ContainerModels     Codable mirrors of `container … --format json`
-  BoxManager          what a "box" is: create, provision, destroy, classify
-
-Sources/appbox/        the CLI (swift-argument-parser)
-Sources/AppBoxApp/     the SwiftUI menu bar app
-```
-
-Two decisions worth knowing:
-
-**Binaries are located explicitly, never through a login shell.** A GUI app's
-`Process` does not inherit your interactive `PATH`, so the app and the CLI must
-find `container` the same deliberate way or they will disagree about whether
-it's even installed.
-
-**Boxes are labelled.** New boxes get `appbox.managed=1` plus `appbox.distro`,
-so the app can tell our containers from anything else on the machine without
-guessing. Boxes made by the original shell script have no labels, so they're
-matched by *shape* instead — an init process parked on `sleep infinity` plus a
-`/data` mount. Your existing boxes keep working untouched.
-
-## Inherited constraints
-
-These come from Apple's `container` and are not bugs in appbox:
-
-- **No systemd as PID 1.** Boxes run `--init` and `sleep infinity`, so
-  systemd-dependent services (auto-starting sshd, cron) aren't supported.
-  Attach with `appbox shell` and launch daemons manually.
-- **IPs are DHCP** and can change across restarts. Use the box name or
-  `appbox ip <name>`, never a hardcoded address.
-- **CLI/daemon version skew breaks networking**, with errors like
-  `no available interface strategy for network default … variant=nil`. The app
-  detects this and offers to restart the service; by hand it's
-  `container system stop && container system start`.
-
-## Registry facts
-
-Verified against live registries — these are easy to get wrong:
-
-| Distro | Image | Notes |
+| Distro | Image | Package manager |
 |---|---|---|
-| Ubuntu | `ubuntu:latest` | `latest` tracks the newest **LTS**, never interim releases |
-| Debian | `debian:latest` | |
-| Alpine | `alpine:latest` | |
-| Fedora | `fedora:latest` | |
-| Rocky | `quay.io/rockylinux/rockylinux:{10,9}` | **no `latest` tag exists**; `latest` resolves to 10 |
-| Arch | `menci/archlinuxarm:base` | the official `archlinux` image is **amd64-only**; this is Arch Linux ARM, rolling |
+| Ubuntu | `ubuntu:latest` (newest LTS) | apt |
+| Debian | `debian:latest` | apt |
+| Alpine | `alpine:latest` | apk |
+| Fedora | `fedora:latest` | dnf |
+| Rocky Linux | `quay.io/rockylinux/rockylinux:{10,9}` | dnf |
+| Arch Linux ARM | `menci/archlinuxarm:base` (rolling) | pacman |
 
-Also: **pacman 7 needs `--disable-sandbox`** inside a box. Its downloader
-sandbox uses Landlock, which the container kernel doesn't support — without the
-flag it fails with *"restricting filesystem access failed because Landlock is
-not supported by the kernel"*. Provisioning already passes it; add it to any
-manual `pacman` run.
+Any other value is passed through as a raw image reference, so
+`appbox create tiny busybox:latest` works too.
+
+## Caveats
+
+Please read these — several are inherited from Apple's `container` and are not
+things AppBox can fix.
+
+**Not notarized.** See [Gatekeeper](#gatekeeper) above. Ad-hoc signing also
+means macOS treats each rebuild as a different app, so **launch at login may not
+persist** until the app is properly signed.
+
+**No systemd.** Boxes run an init process parked on `sleep infinity`, so
+systemd-dependent services — auto-starting sshd, cron, `systemctl` — are not
+supported. Attach with `appbox shell` and launch daemons manually.
+
+**IP addresses are DHCP** and can change when a box restarts. Use the box name
+or `appbox ip <name>`; never hardcode an address.
+
+**CLI/daemon version skew breaks networking.** After upgrading Apple's
+`container` CLI, the old daemon keeps running and networking fails with
+`no available interface strategy for network default … variant=nil`. AppBox
+detects this and offers to restart the service; by hand it is
+`container system stop && container system start`.
+
+**`htop` is unavailable on Rocky.** It ships in EPEL, which Rocky's default
+repositories don't include. Provisioning skips packages it can't find rather
+than failing, so everything else installs.
+
+**The official Arch image is amd64-only** and will not run on Apple Silicon.
+`create-arch` uses Arch Linux ARM, which is rolling-release and ignores any
+version argument. If you run `pacman` manually inside a box, add
+`--disable-sandbox` — pacman 7's downloader sandbox uses Landlock, which the
+container kernel does not support.
+
+**Rocky publishes no `latest` tag**, so `latest` resolves to the newest major
+(10).
+
+**A box name starting with a digit** will be read as a version by the
+`create-<distro>` commands, because they accept the name and version in either
+order.
+
+**Arm64 only.** Everything runs as arm64; Intel Macs are not supported.
+
+## Build from source
+
+```sh
+git clone https://github.com/brainchillz/Appbox-Native.git
+cd Appbox-Native
+
+swift build && swift test        # the engine and CLI
+./build-app.sh --release         # -> build/AppBox.app
+./build-app.sh --debug --run     # fast build, then launch
+./package.sh                     # -> dist/AppBox-<version>.dmg
+```
+
+There is no `.xcodeproj` — SPM builds the executables and `build-app.sh`
+assembles the bundle, so the whole project builds from the terminal.
+
+`package.sh` adapts to whatever signing is available: it uses a Developer ID
+certificate with the hardened runtime when one exists, and falls back to an
+ad-hoc signature when it doesn't. With a certificate installed,
+`./package.sh --notarize` also submits and staples.
+
+The app cannot be sandboxed — it spawns processes and reads `~/containers` — so
+there is no Mac App Store path.
+
+## How it's put together
+
+`AppBoxKit` holds all the logic; the CLI and the app are thin layers over it, so
+the two interfaces cannot drift apart. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the design rules and the platform facts
+behind them.
+
+Boxes created by AppBox are labelled `appbox.managed`, so the app can tell them
+apart from other containers on the machine. Boxes created by the earlier bash
+version have no labels and are recognised by shape instead, so they keep working
+untouched.
 
 ## Status
 
-Working: menu bar list with live state and toggles, create, provision, destroy,
-shell-in-Terminal, logs, service-health banners, and the full CLI.
+Early but functional. Working: the menu bar list with live state and toggles,
+create, provision, destroy, shell-in-Terminal, logs, service-health banners, CLI
+installation, and the full command line interface.
 
-Not done yet: app icon, an "Install Command Line Tool" flow, launch-at-login,
-and Developer ID signing + notarization.
+Not done: notarization, auto-updates, and an embedded terminal.
