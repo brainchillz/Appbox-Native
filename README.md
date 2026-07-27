@@ -210,3 +210,7 @@ create, provision, destroy, shell-in-Terminal, logs, service-health banners, CLI
 installation, and the full command line interface.
 
 Not done: notarization, auto-updates, and an embedded terminal.
+
+## License
+
+[MIT](LICENSE).
