@@ -25,29 +25,12 @@ To build from source you also need **Xcode 26 / Swift 6**.
 
 ## Install
 
-Download `AppBox-0.1.0.dmg` from the
+Download `AppBox-0.1.1.dmg` from the
 [latest release](https://github.com/brainchillz/Appbox-Native/releases/latest),
 open it, and drag **AppBox** to Applications.
 
-### Gatekeeper
-
-**This release is not notarized.** It carries an ad-hoc signature, which is
-enough to run but not enough to satisfy Gatekeeper. Because you downloaded the
-DMG through a browser, macOS attaches a quarantine flag and will refuse to open
-the app.
-
-Clear it after installing:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/AppBox.app
-```
-
-Then open the app normally. On macOS 15+ the old Control-click → Open bypass no
-longer works; the alternative to the command above is System Settings →
-Privacy & Security → **Open Anyway**.
-
-If you build from source instead, none of this applies — locally built apps are
-never quarantined.
+The app is signed with a Developer ID certificate and notarized by Apple, so it
+opens normally — no Gatekeeper warning and nothing to work around.
 
 ### Install the command line tool
 
@@ -132,10 +115,6 @@ Any other value is passed through as a raw image reference, so
 Please read these — several are inherited from Apple's `container` and are not
 things AppBox can fix.
 
-**Not notarized.** See [Gatekeeper](#gatekeeper) above. Ad-hoc signing also
-means macOS treats each rebuild as a different app, so **launch at login may not
-persist** until the app is properly signed.
-
 **No systemd.** Boxes run an init process parked on `sleep infinity`, so
 systemd-dependent services — auto-starting sshd, cron, `systemctl` — are not
 supported. Attach with `appbox shell` and launch daemons manually.
@@ -186,7 +165,13 @@ assembles the bundle, so the whole project builds from the terminal.
 `package.sh` adapts to whatever signing is available: it uses a Developer ID
 certificate with the hardened runtime when one exists, and falls back to an
 ad-hoc signature when it doesn't. With a certificate installed,
-`./package.sh --notarize` also submits and staples.
+`./package.sh --notarize` also submits to Apple and staples the ticket.
+
+Builds made without a Developer ID certificate are ad-hoc signed. Those run
+fine locally, but if you transfer one to another Mac by any route that sets the
+quarantine flag, the recipient needs
+`xattr -dr com.apple.quarantine /Applications/AppBox.app`. Released builds are
+notarized and need none of this.
 
 The app cannot be sandboxed — it spawns processes and reads `~/containers` — so
 there is no Mac App Store path.
@@ -209,7 +194,9 @@ Early but functional. Working: the menu bar list with live state and toggles,
 create, provision, destroy, shell-in-Terminal, logs, service-health banners, CLI
 installation, and the full command line interface.
 
-Not done: notarization, auto-updates, and an embedded terminal.
+Releases are signed with a Developer ID certificate and notarized by Apple.
+
+Not done: auto-updates and an embedded terminal.
 
 ## License
 

@@ -2,7 +2,7 @@ import AppBoxKit
 import ArgumentParser
 import Foundation
 
-let appboxVersion = "0.1.0"
+let appboxVersion = "0.1.1"
 
 /// Prints progress in the same idiom the bash script used, so muscle memory and
 /// existing docs still apply. Everything goes to stderr, leaving stdout clean
