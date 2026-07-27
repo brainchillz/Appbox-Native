@@ -1,9 +1,25 @@
 import AppBoxKit
 import SwiftUI
 
+/// Carries the natural height of the box rows up to the ScrollView that
+/// contains them.
+struct ListHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat { 0 }
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct MenuBarContentView: View {
     @Bindable var store: BoxStore
     @Environment(\.openWindow) private var openWindow
+
+    /// Natural height of the rows, once measured.
+    @State private var measuredListHeight: CGFloat?
+
+    /// About six rows. Past this the list scrolls rather than growing toward
+    /// the bottom of the screen.
+    static let maxListHeight: CGFloat = 340
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -82,10 +98,24 @@ struct MenuBarContentView: View {
                         }
                     }
                 }
+                // Report the natural height of the rows so the ScrollView can
+                // be sized to fit them.
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: ListHeightKey.self, value: proxy.size.height)
+                    })
             }
-            // Cap the height so a long list scrolls instead of running off
-            // the screen, but let short lists size naturally.
-            .frame(maxHeight: 320)
+            // A ScrollView has no intrinsic height, so `.frame(maxHeight:)`
+            // alone collapses it to roughly one row. Measure the content and
+            // ask for exactly that, capped so a long list scrolls instead of
+            // running off the screen. `nil` on the first pass lets it lay out
+            // naturally before the measurement arrives.
+            .frame(height: measuredListHeight.map { min($0, Self.maxListHeight) })
+            .onPreferenceChange(ListHeightKey.self) { height in
+                guard height > 0 else { return }
+                measuredListHeight = height
+            }
         }
     }
 
