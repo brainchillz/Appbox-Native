@@ -146,6 +146,14 @@ struct MenuBarContentView: View {
             .help("Refresh")
 
             Button {
+                activateApp()
+                openWindow(id: "settings")
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .help("Settings")
+
+            Button {
                 NSApplication.shared.terminate(nil)
             } label: {
                 Image(systemName: "power")

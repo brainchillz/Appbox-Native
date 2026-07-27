@@ -28,6 +28,11 @@ struct AppBoxApp: App {
             CreateBoxView(store: store)
         }
         .windowResizability(.contentSize)
+
+        Window("AppBox Settings", id: "settings") {
+            SettingsView()
+        }
+        .windowResizability(.contentSize)
     }
 }
 
