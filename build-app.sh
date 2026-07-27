@@ -50,6 +50,15 @@ mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources" "$OUT/Contents/Helpers"
 cp "$BIN_DIR/AppBoxApp" "$OUT/Contents/MacOS/$APP_NAME"
 cp "$BIN_DIR/appbox"    "$OUT/Contents/Helpers/appbox"
 
+# The icon is generated from Tools/make-icon.swift rather than committed as a
+# binary blob. Build it on demand if it's missing.
+if [ ! -f Resources/AppIcon.icns ]; then
+  cyan "generating app icon…"
+  mkdir -p Resources
+  swift Tools/make-icon.swift
+fi
+cp Resources/AppIcon.icns "$OUT/Contents/Resources/AppIcon.icns"
+
 # LSUIElement=1 makes this a menu bar app with no Dock icon.
 cat > "$OUT/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -60,6 +69,7 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key>       <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>        <string>$BUNDLE_ID</string>
   <key>CFBundleExecutable</key>        <string>$APP_NAME</string>
+  <key>CFBundleIconFile</key>          <string>AppIcon</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key>           <string>$VERSION</string>

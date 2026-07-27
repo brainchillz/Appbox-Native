@@ -7,3 +7,5 @@ build/
 
 # Local secrets — never commit.
 token
+dist/
+Resources/AppIcon.icns
