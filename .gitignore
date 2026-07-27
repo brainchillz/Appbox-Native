@@ -1,0 +1,9 @@
+.build/
+build/
+.swiftpm/
+.DS_Store
+*.xcodeproj
+*.xcworkspace
+
+# Local secrets — never commit.
+token
