@@ -16,7 +16,7 @@ switch to flip it on or off. Create, provision, inspect and destroy boxes from a
 management window, and open a real shell in Terminal with one click.
 
 <p align="center">
-  <img src="docs/screenshots/menu-bar.png" width="400" alt="The AppBox menu bar dropdown listing three boxes with state dots and on/off switches">
+  <img src="docs/screenshots/menu-bar.png" width="430" alt="The AppBox menu bar dropdown listing three running boxes with state dots and on/off switches">
 </p>
 
 <p align="center">
@@ -29,29 +29,30 @@ management window, and open a real shell in Terminal with one click.
 
 ### Create a box
 
-<img src="docs/screenshots/new-box.png" width="466" alt="The New Box window with name, distribution, version, CPU, memory and toolset options">
+<img src="docs/screenshots/new-box.png" width="478" alt="The New Box window with name, distribution, version, CPU, memory and toolset options">
 
-Pick a distribution and version, set CPUs and memory, and optionally install the
-standard CLI toolset up front. The version field adapts per distribution — it
-tells you Ubuntu's `latest` means the newest LTS, and that Rocky has no `latest`
-tag at all.
+Pick a distribution and version, set CPUs and memory. **Full Linux install** is
+on by default — the standard toolset plus an account matching your Mac user,
+with a home directory kept on the host. The version field adapts per
+distribution: it tells you Ubuntu's `latest` means the newest LTS, and that
+Rocky has no `latest` tag at all.
 
 ### Manage everything
 
 <img src="docs/screenshots/manager.png" width="820" alt="The management window showing the dev box stopped, with its image, host data directory and console">
 
-Per-box detail: image reference, IP (only assigned while running), host data
-directory with a reveal-in-Finder button, and a console pane. Note the *Managed*
-row — this box was created by the older shell script and has no labels, so
-AppBox recognised it by shape instead.
+Per-box detail: the image it was built from, IP (only assigned while running),
+host data directory with a reveal-in-Finder button, and a console pane. Boxes
+built by AppBox run from a cached `appbox-base/` image carrying the toolset and
+the user account.
 
 ### Open a real shell
 
-<img src="docs/screenshots/shell.png" width="850" alt="The management window beside a Terminal window with a root shell inside the dev box">
+<img src="docs/screenshots/shell.png" width="860" alt="The management window beside a Terminal window with a shell inside the dev box">
 
 **Open Shell** starts the box if needed and drops you into a real Terminal
-window — your own profile, your own scrollback, no embedded-terminal
-compromises.
+window as your own user, in your own home — not as root. Your profile, your
+scrollback, no embedded-terminal compromises.
 
 ---
 
