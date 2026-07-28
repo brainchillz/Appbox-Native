@@ -66,7 +66,7 @@ To build from source you also need **Xcode 26 / Swift 6**.
 
 ## Install
 
-Download `AppBox-0.1.1.dmg` from the
+Download `AppBox-0.2.0.dmg` from the
 [latest release](https://github.com/brainchillz/Appbox-Native/releases/latest),
 open it, and drag **AppBox** to Applications.
 
@@ -256,11 +256,13 @@ untouched.
 
 Early but functional. Working: the menu bar list with live state and toggles,
 create, provision, destroy, shell-in-Terminal, logs, service-health banners, CLI
-installation, and the full command line interface.
+installation, and the full command line interface. Boxes are full Linux installs
+with their own user account and a persistent home.
 
 Releases are signed with a Developer ID certificate and notarized by Apple.
 
-Not done: auto-updates and an embedded terminal.
+Not done: SSH access and VS Code Remote, mounting your Mac home into a box,
+port publishing, export/import, and auto-updates.
 
 ## License
 
