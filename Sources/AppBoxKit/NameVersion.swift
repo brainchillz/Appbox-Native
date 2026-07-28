@@ -11,12 +11,14 @@ import Foundation
 public struct NameVersion: Equatable, Sendable {
     public var name: String?
     public var version: String?
-    public var full: Bool
+    /// Skip the toolset and user account. `--full` is accepted and ignored,
+    /// since a full box is now the default.
+    public var bare: Bool
 
-    public init(name: String? = nil, version: String? = nil, full: Bool = false) {
+    public init(name: String? = nil, version: String? = nil, bare: Bool = false) {
         self.name = name
         self.version = version
-        self.full = full
+        self.bare = bare
     }
 
     /// Is this token a version rather than a box name?
@@ -26,15 +28,18 @@ public struct NameVersion: Equatable, Sendable {
     }
 
     /// Split positional arguments into name + version, order-independently.
-    /// `--full` may appear anywhere and is extracted.
+    /// `--bare` (and the now-redundant `--full`) may appear anywhere.
     public static func parse(_ arguments: [String]) throws -> NameVersion {
         var result = NameVersion()
 
         for argument in arguments {
-            if argument == "--full" {
-                result.full = true
+            if argument == "--bare" {
+                result.bare = true
                 continue
             }
+            // Retained for compatibility with the shell script; a full box is
+            // the default now, so this is a no-op.
+            if argument == "--full" { continue }
 
             if isVersionToken(argument), result.version == nil {
                 result.version = argument

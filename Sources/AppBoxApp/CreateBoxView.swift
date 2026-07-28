@@ -11,7 +11,7 @@ struct CreateBoxView: View {
     @State private var name = ""
     @State private var distro: Distro = .ubuntu
     @State private var version = ""
-    @State private var full = false
+    @State private var full = true
     @State private var cpus = ""
     @State private var memory = ""
 
@@ -64,12 +64,12 @@ struct CreateBoxView: View {
                 }
 
                 Section {
-                    Toggle("Install the standard CLI toolset", isOn: $full)
+                    Toggle("Full Linux install", isOn: $full)
                     Text(
                         full
-                            ? "Adds curl, git, vim, sudo, dig, tmux and friends. "
-                                + "Takes a few minutes."
-                            : "You can install it later from the box's menu.")
+                            ? "The standard CLI toolset plus an account matching your Mac "
+                                + "user, with a home directory kept on the host."
+                            : "A bare container: no toolset, no user account, root only.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -96,7 +96,7 @@ struct CreateBoxView: View {
                     store.create(
                         name: trimmedName,
                         token: token,
-                        full: full,
+                        bare: !full,
                         cpus: Int(cpus.trimmingCharacters(in: .whitespaces)),
                         memory: memory.isEmpty ? nil : memory)
                     dismiss()

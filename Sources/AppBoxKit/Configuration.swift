@@ -36,6 +36,16 @@ public struct Configuration: Sendable {
         home.appendingPathComponent(name)
     }
 
+    /// Host directory backing the box user's home.
+    ///
+    /// Keeping `/home/<user>` on the host is what lets a box be rebuilt — a new
+    /// distro version, different resources, recovering from a broken box —
+    /// without losing dotfiles, shell history, keys or checkouts. Everything
+    /// inside the container already survives stop/start; this survives destroy.
+    public func homeDirectory(for name: String) -> URL {
+        home.appendingPathComponent(name).appendingPathComponent("home")
+    }
+
     public init(
         home: URL,
         forcedImage: String? = nil,

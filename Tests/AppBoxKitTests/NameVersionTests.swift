@@ -23,12 +23,22 @@ struct NameVersionTests {
         #expect(forward.version == "24.04")
     }
 
-    @Test("--full is extracted from any position")
-    func fullFlagAnywhere() throws {
-        #expect(try NameVersion.parse(["--full", "web", "24.04"]).full)
-        #expect(try NameVersion.parse(["web", "--full", "24.04"]).full)
-        #expect(try NameVersion.parse(["web", "24.04", "--full"]).full)
-        #expect(try !NameVersion.parse(["web", "24.04"]).full)
+    @Test("--bare is extracted from any position")
+    func bareFlagAnywhere() throws {
+        #expect(try NameVersion.parse(["--bare", "web", "24.04"]).bare)
+        #expect(try NameVersion.parse(["web", "--bare", "24.04"]).bare)
+        #expect(try NameVersion.parse(["web", "24.04", "--bare"]).bare)
+        #expect(try !NameVersion.parse(["web", "24.04"]).bare)
+    }
+
+    /// A full box is the default now, so the shell script's `--full` must still
+    /// parse rather than being mistaken for a box name.
+    @Test("--full is accepted and ignored")
+    func fullFlagIsANoOp() throws {
+        let parsed = try NameVersion.parse(["web", "24.04", "--full"])
+        #expect(!parsed.bare)
+        #expect(parsed.name == "web")
+        #expect(parsed.version == "24.04")
     }
 
     @Test("a bare name leaves the version unset")

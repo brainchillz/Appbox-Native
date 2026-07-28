@@ -4,9 +4,12 @@
 
 A native macOS app and CLI built on Apple's
 [`container`](https://github.com/apple/container) tool. A *box* is a named,
-persistent Linux machine: you shell into it, install packages in it, and its
-state survives stop/start. A host directory is bind-mounted at `/data`, so the
-data you can't lose outlives the container itself.
+persistent Linux machine — closer to WSL than to a Docker container.
+
+Every box comes as a **full Linux install**: the standard CLI toolset, an
+account matching your Mac user, and a home directory kept on the host. Files
+you create in Linux belong to you on the Mac and vice versa, and your home
+survives destroying and rebuilding the box.
 
 A persistent icon by the clock lists every box with its running state and a
 switch to flip it on or off. Create, provision, inspect and destroy boxes from a
@@ -106,6 +109,7 @@ appbox create-alpine <name> [version|latest]
 appbox create-fedora <name> [43|44|latest]
 appbox create-rocky  <name> [9|10|latest]             # latest = 10
 appbox create-arch   <name>                           # rolling — always latest
+                                                      # add --bare for no toolset/user
 
 appbox set-default   [distro|--clear]   # distro used by a bare `create`
 appbox provision     <name>             # install the standard toolset
@@ -114,9 +118,10 @@ appbox exec          <name> <cmd...>
 appbox start|stop|restart|list|ip|info|destroy <name>
 ```
 
-`--full` on any create command also installs the standard toolset. The version
-and name may be given in **either order** — `create-ubuntu web 24.04` and
-`create-ubuntu 24.04 web` are equivalent.
+Boxes are fully provisioned by default; pass `--bare` for a plain container
+with no toolset and no user account. The version and name may be given in
+**either order** — `create-ubuntu web 24.04` and `create-ubuntu 24.04 web` are
+equivalent.
 
 A bare `appbox create <name>` does not silently pick a distro. It uses
 `$APPBOX_IMAGE`, then the distro saved by `set-default`, and otherwise prints a
@@ -148,6 +153,22 @@ menu and exits.
 Any other value is passed through as a raw image reference, so
 `appbox create tiny busybox:latest` works too.
 
+## What persists
+
+| | Survives stop/start | Survives destroy |
+|---|---|---|
+| Everything inside the box | yes | no |
+| `/home/<you>` → `$APPBOX_HOME/<name>/home` | yes | **yes** |
+| `/data` → `$APPBOX_HOME/<name>/data` | yes | **yes** |
+
+So you can `destroy` a box and recreate it on a newer distro release, or with
+different CPU and memory, and your dotfiles, keys, shell history and checkouts
+come back with it. `--purge` deletes the host directories too.
+
+Your box user is created at your Mac account's uid and gid, which is what makes
+the shared directories behave — a file written inside the box is owned by you
+on the Mac, with no permission juggling.
+
 ## Caveats
 
 Please read these — several are inherited from Apple's `container` and are not
@@ -178,6 +199,11 @@ container kernel does not support.
 
 **Rocky publishes no `latest` tag**, so `latest` resolves to the newest major
 (10).
+
+**`id` may report an odd group name.** Your box user takes your Mac gid (20),
+which most distributions already use for something else — Debian, Ubuntu and
+Alpine all call it `dialout`. Ownership is numeric and correct; only the label
+differs, and renaming a system group would be worse.
 
 **A box name starting with a digit** will be read as a version by the
 `create-<distro>` commands, because they accept the name and version in either

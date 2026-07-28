@@ -243,10 +243,58 @@ public struct ContainerClient: Sendable {
         return result?.succeeded ?? false
     }
 
+    // MARK: - Images
+
+    public func imageExists(_ reference: String) -> Bool {
+        (try? run(["image", "inspect", reference]))?.succeeded ?? false
+    }
+
+    /// Build an image from a generated Dockerfile.
+    ///
+    /// The build context is a throwaway directory containing only the
+    /// Dockerfile — nothing here needs local files, and an empty context keeps
+    /// the build fast.
+    public func build(
+        dockerfile: String,
+        tag: String,
+        onProgressLine: (@Sendable (String) -> Void)? = nil
+    ) throws {
+        let context = FileManager.default.temporaryDirectory
+            .appendingPathComponent("appbox-build-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: context, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: context) }
+
+        let path = context.appendingPathComponent("Dockerfile")
+        try dockerfile.write(to: path, atomically: true, encoding: .utf8)
+
+        try runChecked(
+            ["build", "--tag", tag, "--file", path.path, context.path],
+            onOutputLine: onProgressLine, onErrorLine: onProgressLine)
+    }
+
+    /// `container build` needs the builder VM running; it is not started
+    /// automatically.
+    public func ensureBuilderRunning() throws {
+        if let status = try? run(["builder", "status"]),
+           status.succeeded, status.stdout.contains("running") {
+            return
+        }
+        try runChecked(["builder", "start"])
+    }
+
     /// Replace this process with an interactive `container exec -it`, so the
     /// child gets the real TTY. Only returns on failure.
-    public func execInteractive(_ name: String, command: [String]) throws -> Never {
-        try ProcessRunner.replaceCurrentProcess(binary, ["exec", "-it", name] + command)
+    public func execInteractive(
+        _ name: String,
+        command: [String],
+        user: String? = nil,
+        workdir: String? = nil
+    ) throws -> Never {
+        var arguments = ["exec", "-it"]
+        if let user { arguments += ["--user", user] }
+        if let workdir { arguments += ["--workdir", workdir] }
+        arguments.append(name)
+        try ProcessRunner.replaceCurrentProcess(binary, arguments + command)
     }
 
     public func logs(

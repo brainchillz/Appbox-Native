@@ -50,8 +50,8 @@ extension AppBox {
         @Argument(help: "Distro shortcut (ubuntu, fedora43, rocky9…) or a raw image reference.")
         var token: String?
 
-        @Flag(name: .long, help: "Also install the standard CLI toolset.")
-        var full = false
+        @Flag(name: .long, help: "Skip the toolset and user account — a bare container.")
+        var bare = false
 
         @OptionGroup var options: CreateOptions
 
@@ -60,7 +60,7 @@ extension AppBox {
             let manager = try Context.makeManager(reporter: reporter)
 
             let request = BoxManager.CreateRequest(
-                name: name, token: token, full: full,
+                name: name, token: token, bare: bare,
                 cpus: options.cpus, memory: options.memory)
 
             // Surface the distro menu instead of a bare error.
@@ -84,7 +84,7 @@ extension AppBox {
 protocol DistroCreateCommand: ParsableCommand {
     static var distro: Distro { get }
     var arguments: [String] { get }
-    var full: Bool { get }
+    var bare: Bool { get }
     var options: CreateOptions { get }
 }
 
@@ -94,7 +94,7 @@ extension DistroCreateCommand {
         let manager = try Context.makeManager(reporter: reporter)
         try manager.createFromDistro(
             Self.distro,
-            arguments: full ? arguments + ["--full"] : arguments,
+            arguments: bare ? arguments + ["--bare"] : arguments,
             options: options,
             reporter: reporter)
     }
@@ -108,7 +108,7 @@ extension AppBox {
             abstract: "Create an Ubuntu box (default: latest = newest LTS).")
         @Argument(help: "<name> and optional [24.04|26.04|latest], in either order.")
         var arguments: [String] = []
-        @Flag(name: .long) var full = false
+        @Flag(name: .long) var bare = false
         @OptionGroup var options: CreateOptions
     }
 
@@ -119,7 +119,7 @@ extension AppBox {
             abstract: "Create a Debian box (default: latest).")
         @Argument(help: "<name> and optional [version|latest], in either order.")
         var arguments: [String] = []
-        @Flag(name: .long) var full = false
+        @Flag(name: .long) var bare = false
         @OptionGroup var options: CreateOptions
     }
 
@@ -130,7 +130,7 @@ extension AppBox {
             abstract: "Create an Alpine box (default: latest).")
         @Argument(help: "<name> and optional [version|latest], in either order.")
         var arguments: [String] = []
-        @Flag(name: .long) var full = false
+        @Flag(name: .long) var bare = false
         @OptionGroup var options: CreateOptions
     }
 
@@ -141,7 +141,7 @@ extension AppBox {
             abstract: "Create a Fedora box (default: latest).")
         @Argument(help: "<name> and optional [43|44|latest], in either order.")
         var arguments: [String] = []
-        @Flag(name: .long) var full = false
+        @Flag(name: .long) var bare = false
         @OptionGroup var options: CreateOptions
     }
 
@@ -152,7 +152,7 @@ extension AppBox {
             abstract: "Create a Rocky Linux box (latest = 10; Rocky has no 'latest' tag).")
         @Argument(help: "<name> and optional [9|10|latest], in either order.")
         var arguments: [String] = []
-        @Flag(name: .long) var full = false
+        @Flag(name: .long) var bare = false
         @OptionGroup var options: CreateOptions
     }
 
@@ -163,7 +163,7 @@ extension AppBox {
             abstract: "Create an Arch box (Arch Linux ARM — rolling, always latest).")
         @Argument(help: "<name>.")
         var arguments: [String] = []
-        @Flag(name: .long) var full = false
+        @Flag(name: .long) var bare = false
         @OptionGroup var options: CreateOptions
     }
 }
@@ -244,7 +244,11 @@ extension AppBox {
             }
             try manager.ensureRunning(name)
             let shell = manager.preferredShell(name)
-            try manager.client.execInteractive(name, command: [shell])
+            try manager.client.execInteractive(
+                name,
+                command: [shell],
+                user: manager.loginUser(name),
+                workdir: manager.loginDirectory(name))
         }
     }
 

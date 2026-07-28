@@ -157,14 +157,14 @@ final class BoxStore {
         }
     }
 
-    func create(name: String, token: String, full: Bool, cpus: Int?, memory: String?) {
-        let label = full
-            ? "Creating \(name) and installing the toolset — this can take a few minutes…"
-            : "Creating \(name)…"
+    func create(name: String, token: String, bare: Bool, cpus: Int?, memory: String?) {
+        let label = !bare
+            ? "Creating \(name)…"
+            : "Creating a bare \(name)…"
         run(box: name, activity: label) { manager in
             _ = try manager.create(
                 BoxManager.CreateRequest(
-                    name: name, token: token, full: full, cpus: cpus, memory: memory))
+                    name: name, token: token, bare: bare, cpus: cpus, memory: memory))
         }
     }
 

@@ -93,7 +93,7 @@ extension BoxManager {
         guard let name = parsed.name else {
             throw AppBoxError.usage(
                 "usage: appbox create-\(distro.rawValue) <name> "
-                    + (distro.isRolling ? "[--full]" : "[version|latest] [--full]"))
+                    + (distro.isRolling ? "[--bare]" : "[version|latest] [--bare]"))
         }
 
         var version = parsed.version
@@ -118,7 +118,7 @@ extension BoxManager {
 
         let box = try create(
             BoxManager.CreateRequest(
-                name: name, token: token, full: parsed.full,
+                name: name, token: token, bare: parsed.bare,
                 cpus: options.cpus, memory: options.memory),
             reporter: reporter)
 

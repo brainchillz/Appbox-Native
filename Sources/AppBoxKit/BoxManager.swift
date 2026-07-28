@@ -57,10 +57,17 @@ public struct Box: Sendable {
 public struct BoxManager: Sendable {
     public let client: ContainerClient
     public let config: Configuration
+    /// The macOS account boxes' Linux user mirrors.
+    public let user: HostUser
 
-    public init(client: ContainerClient, config: Configuration) {
+    public init(
+        client: ContainerClient,
+        config: Configuration,
+        user: HostUser = .current()
+    ) {
         self.client = client
         self.config = config
+        self.user = user
     }
 
     // MARK: - Labels
@@ -73,6 +80,8 @@ public struct BoxManager: Sendable {
         public static let managed = "appbox.managed"
         public static let distro = "appbox.distro"
         public static let version = "appbox.version"
+        /// The Linux user created to mirror the host account.
+        public static let user = "appbox.user"
         /// Bumped if the meaning of appbox's labels ever changes.
         public static let schema = "appbox.schema"
 
@@ -147,17 +156,20 @@ public struct BoxManager: Sendable {
         public var name: String
         /// Distro token or raw image reference. Nil means "use the default".
         public var token: String?
-        public var full: Bool
+        /// Skip the standard toolset and the user account, giving a bare
+        /// container. The default is a full Linux install, because that is what
+        /// a "box" is meant to be.
+        public var bare: Bool
         public var cpus: Int?
         public var memory: String?
 
         public init(
-            name: String, token: String? = nil, full: Bool = false,
+            name: String, token: String? = nil, bare: Bool = false,
             cpus: Int? = nil, memory: String? = nil
         ) {
             self.name = name
             self.token = token
-            self.full = full
+            self.bare = bare
             self.cpus = cpus
             self.memory = memory
         }
@@ -201,17 +213,39 @@ public struct BoxManager: Sendable {
         }
 
         let dataDirectory = config.dataDirectory(for: request.name)
+        let homeDirectory = config.homeDirectory(for: request.name)
         try FileManager.default.createDirectory(
             at: dataDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: homeDirectory, withIntermediateDirectories: true)
 
         let cpus = request.cpus ?? config.cpus
         let memory = request.memory ?? config.memory
 
+        // A full box is built from a cached image carrying the toolset and the
+        // user account, so creation is near-instant after the first build of
+        // each distro. Raw image references can't be prepared this way and fall
+        // back to provisioning at runtime.
+        var image = resolved.image
+        var preparedImage = false
+
+        if !request.bare,
+           let token = request.token ?? resolved.viaDefault ?? config.forcedImage,
+           let parsed = Distro.parse(token: token) {
+            let base = BaseImage(distro: parsed.distro, version: parsed.version, user: user)
+            try ensureBaseImage(base, reporter: reporter)
+            image = base.reference
+            preparedImage = true
+        }
+
         reporter.info(
-            "creating box '\(request.name)' from \(resolved.image) "
-                + "(cpus=\(cpus) mem=\(memory))")
+            "creating box '\(request.name)' from \(image) (cpus=\(cpus) mem=\(memory))")
         reporter.info(
-            "host data dir: \(dataDirectory.path)  ->  \(Self.dataMountPoint) inside the box")
+            "host data: \(dataDirectory.path)  ->  \(Self.dataMountPoint)")
+        if !request.bare {
+            reporter.info(
+                "host home: \(homeDirectory.path)  ->  \(user.homeDirectory)")
+        }
 
         var labels = [
             Label.managed: "1",
@@ -222,13 +256,19 @@ public struct BoxManager: Sendable {
            let parsed = Distro.parse(token: token), let version = parsed.version {
             labels[Label.version] = version
         }
+        if !request.bare { labels[Label.user] = user.name }
+
+        var volumes = [(host: dataDirectory.path, guest: Self.dataMountPoint)]
+        if !request.bare {
+            volumes.append((host: homeDirectory.path, guest: user.homeDirectory))
+        }
 
         let spec = ContainerClient.RunSpec(
             name: request.name,
-            image: resolved.image,
+            image: image,
             cpus: cpus,
             memory: memory,
-            volumes: [(host: dataDirectory.path, guest: Self.dataMountPoint)],
+            volumes: volumes,
             labels: labels
         )
 
@@ -239,13 +279,91 @@ public struct BoxManager: Sendable {
 
         // Brief settle so the box reports an IP.
         Thread.sleep(forTimeInterval: 1.0)
-        reporter.info("box '\(request.name)' is up.")
 
-        if request.full {
-            try provision(request.name, reporter: reporter)
+        if !request.bare {
+            // A raw image reference never went through the builder, so the
+            // toolset and account still have to be installed here.
+            if !preparedImage {
+                try provision(request.name, reporter: reporter)
+                try ensureUser(request.name, reporter: reporter)
+            }
+            try seedHome(request.name, reporter: reporter)
         }
 
+        reporter.info("box '\(request.name)' is up.")
         return try requireBox(request.name)
+    }
+
+    // MARK: - Base images, user account and home
+
+    /// Build the cached base image for a distro if it isn't already present.
+    func ensureBaseImage(_ base: BaseImage, reporter: ProgressReporter) throws {
+        if client.imageExists(base.reference) { return }
+
+        reporter.info(
+            "building \(base.reference) — one time per distro, later boxes reuse it")
+        try client.ensureBuilderRunning()
+        try client.build(dockerfile: base.dockerfile, tag: base.reference) { line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { reporter.detail(trimmed) }
+        }
+    }
+
+    /// Create the host-matching user in a box that wasn't built from a prepared
+    /// image. Idempotent.
+    public func ensureUser(_ name: String, reporter: ProgressReporter = SilentReporter()) throws {
+        guard let manager = detectPackageManager(name) else {
+            throw AppBoxError.noPackageManager(box: name)
+        }
+        if client.probe(name, shellCommand: "id -u \(user.name) >/dev/null 2>&1") { return }
+
+        reporter.info("creating user '\(user.name)' (uid \(user.uid)) with sudo")
+        let script = BaseImage
+            .userCreationCommands(for: manager, user: user)
+            .joined(separator: " && ")
+        let result = try client.exec(name, ["sh", "-c", script])
+        guard result.succeeded else {
+            throw AppBoxError.commandFailed(
+                command: "create user", exitCode: result.exitCode, stderr: result.stderr)
+        }
+    }
+
+    /// Populate an empty persistent home from `/etc/skel`.
+    ///
+    /// Bind-mounting the host directory over `/home/<user>` hides whatever the
+    /// image put there, so without this you land in a shell with no `.bashrc`,
+    /// no prompt and no completion.
+    public func seedHome(_ name: String, reporter: ProgressReporter = SilentReporter()) throws {
+        let guestHome = user.homeDirectory
+        let hostHome = config.homeDirectory(for: name)
+        let fm = FileManager.default
+
+        // Only seed a home that has never been used.
+        let existing = (try? fm.contentsOfDirectory(atPath: hostHome.path)) ?? []
+        guard existing.filter({ $0 != ".DS_Store" }).isEmpty else { return }
+
+        // Prefer the distribution's own skeleton where there is one.
+        _ = try? client.exec(
+            name, ["sh", "-c", "cp -a /etc/skel/. \(guestHome)/ 2>/dev/null || true"])
+
+        // Alpine and some minimal images ship no /etc/skel, so fall back to our
+        // own defaults. Written to the host side of the mount, which avoids
+        // quoting a heredoc through `sh -c`.
+        let seeded = (try? fm.contentsOfDirectory(atPath: hostHome.path)) ?? []
+        if !seeded.contains(".bashrc") {
+            reporter.info("writing a default shell configuration to \(guestHome)")
+            for (filename, contents) in DefaultDotfiles.files {
+                try? contents.write(
+                    to: hostHome.appendingPathComponent(filename),
+                    atomically: true, encoding: .utf8)
+            }
+        } else {
+            reporter.info("seeded \(guestHome) from /etc/skel")
+        }
+
+        // Everything must belong to the box user, whichever route created it.
+        _ = try? client.exec(
+            name, ["sh", "-c", "chown -R \(user.uid):\(user.gid) \(guestHome)"])
     }
 
     // MARK: - Provision
@@ -322,6 +440,21 @@ public struct BoxManager: Sendable {
         client.probe(name, shellCommand: "test -x /bin/bash") ? "/bin/bash" : "/bin/sh"
     }
 
+    /// The account to drop into: the box's own user if it has one, otherwise
+    /// root. A box you live in shouldn't put you at a root prompt with no home.
+    public func loginUser(_ name: String) -> String? {
+        guard let record = try? client.inspect(name),
+              let user = record.labels[Label.user],
+              client.probe(name, shellCommand: "id -u \(user) >/dev/null 2>&1")
+        else { return nil }
+        return user
+    }
+
+    /// Where an interactive shell should start.
+    public func loginDirectory(_ name: String) -> String? {
+        loginUser(name).map { "/home/\($0)" }
+    }
+
     public func destroy(
         _ name: String,
         purge: Bool,
@@ -346,8 +479,16 @@ public struct BoxManager: Sendable {
             }
         } else {
             reporter.info(
-                "host data kept at \(config.dataDirectory(for: name).path) "
-                    + "(use --purge to delete it too)")
+                "kept host data at \(config.dataDirectory(for: name).path)")
+            let home = config.homeDirectory(for: name)
+            if FileManager.default.fileExists(atPath: home.path) {
+                reporter.info("kept home at \(home.path)")
+                reporter.info(
+                    "recreating '\(name)' will restore this environment "
+                        + "(use --purge to delete it instead)")
+            } else {
+                reporter.info("use --purge to delete it too")
+            }
         }
     }
 }
