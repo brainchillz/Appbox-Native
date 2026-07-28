@@ -40,6 +40,8 @@ public struct Box: Sendable {
     public var dataDirectory: URL
     public var managed: Managed
     public var distro: String?
+    /// The Linux account created to mirror the host user, if the box has one.
+    public var user: String?
     public var cpus: Int
     public var memory: String
     public var createdAt: String?
@@ -120,6 +122,7 @@ public struct BoxManager: Sendable {
             // reference so pre-label boxes still report a distro.
             distro: record.labels[Label.distro]
                 ?? Distro.infer(fromImage: record.image)?.distro.rawValue,
+            user: record.labels[Label.user],
             cpus: record.configuration.resources.cpus,
             memory: record.configuration.resources.memoryDescription,
             createdAt: record.configuration.creationDate

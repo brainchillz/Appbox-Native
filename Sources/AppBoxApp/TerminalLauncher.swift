@@ -10,6 +10,22 @@ import Foundation
 /// user declines it. The tradeoff is that we cannot target an existing window.
 enum TerminalLauncher {
 
+    /// Shell fragment selecting the box's own account rather than root.
+    ///
+    /// The account is verified inside the box at launch time instead of trusted
+    /// from the label, so a box whose user was removed — or one created before
+    /// appbox made accounts — still opens a working shell as root.
+    private static func userArguments(for box: Box, binary: URL) -> String {
+        guard let user = box.user else { return "user_args=''" }
+        return """
+            if '\(binary.path)' exec '\(box.name)' id -u '\(user)' >/dev/null 2>&1; then
+              user_args="--user \(user) --workdir /home/\(user)"
+            else
+              user_args=''
+            fi
+            """
+    }
+
     /// Open an interactive shell in the box, starting it first if needed.
     static func openShell(box: Box, containerBinary: URL) throws {
         let script = """
@@ -22,10 +38,12 @@ enum TerminalLauncher {
               sleep 1
             fi
             if '\(containerBinary.path)' exec '\(box.name)' test -x /bin/bash 2>/dev/null; then
-              exec '\(containerBinary.path)' exec -it '\(box.name)' /bin/bash
+              shell=/bin/bash
             else
-              exec '\(containerBinary.path)' exec -it '\(box.name)' /bin/sh
+              shell=/bin/sh
             fi
+            \(userArguments(for: box, binary: containerBinary))
+            exec '\(containerBinary.path)' exec -it $user_args '\(box.name)' "$shell"
             """
         try launch(script: script, named: "appbox-shell-\(box.name)")
     }
