@@ -16,7 +16,7 @@ switch to flip it on or off. Create, provision, inspect and destroy boxes from a
 management window, and open a real shell in Terminal with one click.
 
 <p align="center">
-  <img src="docs/screenshots/menu-bar.png" width="430" alt="The AppBox menu bar dropdown listing three running boxes with state dots and on/off switches">
+  <img src="docs/screenshots/menu-bar.png" width="390" alt="The AppBox menu bar dropdown listing three running boxes with state dots and on/off switches">
 </p>
 
 <p align="center">
@@ -39,12 +39,12 @@ Rocky has no `latest` tag at all.
 
 ### Manage everything
 
-<img src="docs/screenshots/manager.png" width="820" alt="The management window showing the dev box stopped, with its image, host data directory and console">
+<img src="docs/screenshots/manager.png" width="876" alt="The management window showing the dev box running, with its user, home directory, host data and console">
 
 Per-box detail: the image it was built from, IP (only assigned while running),
-host data directory with a reveal-in-Finder button, and a console pane. Boxes
-built by AppBox run from a cached `appbox-base/` image carrying the toolset and
-the user account.
+the box's user account, and both host directories — the persistent home and
+`/data` — each with a reveal-in-Finder button. Boxes built by AppBox run from a
+cached `appbox-base/` image carrying the toolset and the account.
 
 ### Open a real shell
 

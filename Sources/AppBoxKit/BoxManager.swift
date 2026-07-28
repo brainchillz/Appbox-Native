@@ -38,6 +38,10 @@ public struct Box: Sendable {
     public var image: String
     public var ipv4: String?
     public var dataDirectory: URL
+    /// Host directory backing the box user's home, when the box has one.
+    /// Read from the container's actual mounts rather than assumed from
+    /// configuration, so it reflects how the box was really created.
+    public var homeDirectory: URL?
     public var managed: Managed
     public var distro: String?
     /// The Linux account created to mirror the host user, if the box has one.
@@ -47,6 +51,9 @@ public struct Box: Sendable {
     public var createdAt: String?
 
     public var isRunning: Bool { state == .running }
+    /// A box with its own account and persistent home, rather than a bare
+    /// container running as root.
+    public var isFullInstall: Bool { user != nil && homeDirectory != nil }
     /// Does the host data directory actually exist on disk?
     public var hasHostData: Bool {
         FileManager.default.fileExists(atPath: dataDirectory.path)
@@ -117,6 +124,9 @@ public struct BoxManager: Sendable {
             image: record.image,
             ipv4: record.ipv4,
             dataDirectory: config.dataDirectory(for: record.id),
+            homeDirectory: record.configuration.mounts
+                .first { $0.destination.hasPrefix("/home/") }
+                .map { URL(fileURLWithPath: $0.source) },
             managed: Self.classify(record),
             // Labels are authoritative; fall back to reading the image
             // reference so pre-label boxes still report a distro.

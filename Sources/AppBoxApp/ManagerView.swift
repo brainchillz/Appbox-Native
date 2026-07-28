@@ -159,7 +159,18 @@ struct BoxDetailView: View {
             row("Image", box.image, monospaced: true)
             row("IP address", box.ipv4 ?? "— (only assigned while running)")
             row("Resources", "\(box.cpus) CPU · \(box.memory)")
-            row("Host data", box.dataDirectory.path, monospaced: true, reveal: true)
+
+            if let user = box.user {
+                row("User", "\(user) — with sudo, matching your Mac account")
+            } else {
+                row("User", "root only (bare box)")
+            }
+
+            if let home = box.homeDirectory {
+                row("Home", home.path, monospaced: true, reveal: home)
+            }
+            row("Host data", box.dataDirectory.path, monospaced: true, reveal: box.dataDirectory)
+
             if box.managed == .inferred {
                 row("Managed", "Yes — detected by shape (created before appbox used labels)")
             }
@@ -171,7 +182,7 @@ struct BoxDetailView: View {
 
     @ViewBuilder
     private func row(
-        _ label: String, _ value: String, monospaced: Bool = false, reveal: Bool = false
+        _ label: String, _ value: String, monospaced: Bool = false, reveal: URL? = nil
     ) -> some View {
         GridRow {
             Text(label)
@@ -181,16 +192,16 @@ struct BoxDetailView: View {
                 Text(value)
                     .font(monospaced ? .body.monospaced() : .body)
                     .textSelection(.enabled)
-                if reveal {
+                if let reveal {
                     Button {
                         NSWorkspace.shared.selectFile(
-                            nil, inFileViewerRootedAtPath: box.dataDirectory.path)
+                            nil, inFileViewerRootedAtPath: reveal.path)
                     } label: {
                         Image(systemName: "folder")
                     }
                     .buttonStyle(.borderless)
                     .help("Reveal in Finder")
-                    .disabled(!box.hasHostData)
+                    .disabled(!FileManager.default.fileExists(atPath: reveal.path))
                 }
             }
         }
