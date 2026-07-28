@@ -32,7 +32,7 @@ done
 
 APP_NAME="AppBox"
 BUNDLE_ID="net.onthenile.appbox"
-VERSION="0.2.0"
+VERSION="0.2.1"
 OUT="build/$APP_NAME.app"
 
 cyan() { printf '\033[36m==>\033[0m %s\n' "$*"; }
