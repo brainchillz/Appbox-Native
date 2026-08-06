@@ -28,6 +28,30 @@ enum TerminalLauncher {
 
     /// Open an interactive shell in the box, starting it first if needed.
     static func openShell(box: Box, containerBinary: URL) throws {
+        switch box.kind {
+        case .machine:
+            try openMachineShell(box: box, containerBinary: containerBinary)
+        case .container:
+            try openContainerShell(box: box, containerBinary: containerBinary)
+        }
+    }
+
+    /// A machine needs none of the container dance: `machine run` boots it if
+    /// it is stopped, picks the login shell, and lands as the host-matching
+    /// user. It also starts in the directory the command was launched from, so
+    /// this one cds to your home first rather than leaving you in `/`.
+    private static func openMachineShell(box: Box, containerBinary: URL) throws {
+        let script = """
+            #!/bin/sh
+            # Opened by AppBox. Closing this window leaves the machine running.
+            printf '\\033]0;appbox: %s\\007' '\(box.name)'
+            cd "$HOME" 2>/dev/null
+            exec '\(containerBinary.path)' machine run --name '\(box.name)'
+            """
+        try launch(script: script, named: "appbox-shell-\(box.name)")
+    }
+
+    private static func openContainerShell(box: Box, containerBinary: URL) throws {
         let script = """
             #!/bin/sh
             # Opened by AppBox. Closing this window leaves the box running.
@@ -50,10 +74,14 @@ enum TerminalLauncher {
 
     /// Open a terminal tailing the box's logs.
     static func openLogs(box: Box, containerBinary: URL) throws {
+        let command = box.kind == .machine
+            ? "'\(containerBinary.path)' machine logs --follow '\(box.name)'"
+            : "'\(containerBinary.path)' logs --follow '\(box.name)'"
+
         let script = """
             #!/bin/sh
             printf '\\033]0;appbox logs: %s\\007' '\(box.name)'
-            exec '\(containerBinary.path)' logs --follow '\(box.name)'
+            exec \(command)
             """
         try launch(script: script, named: "appbox-logs-\(box.name)")
     }

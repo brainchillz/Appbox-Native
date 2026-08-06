@@ -6,12 +6,21 @@ import Foundation
 struct AppBox: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "appbox",
-        abstract: "Apple containers that act like LXC system containers.",
+        abstract: "Persistent Linux machines on Apple Silicon, from one command.",
         discussion: """
-            A box is a named, persistent Linux machine that stays running in the
-            background, that you shell into and install packages in, and whose
-            state survives stop/start. The host directory $APPBOX_HOME/<name>/data
-            is mounted at /data and survives even destroy (unless --purge).
+            A box is a named, persistent Linux environment you shell into,
+            install packages in, and whose state survives stop/start. There are
+            two kinds, and appbox drives both:
+
+              machine    Apple's container machine. Runs the image's own init,
+                         so systemd services work, and mounts your Mac home at
+                         /Users/<you>. The default where 'container' supports it.
+              container  appbox's original box. A private home directory and
+                         $APPBOX_HOME/<name>/data mounted at /data, both kept
+                         when the box is destroyed. No init system.
+
+            Pass --machine or --container to 'create' to choose. Everything else
+            works out which kind a box is on its own.
 
             CONFIG (environment overrides):
               APPBOX_HOME, APPBOX_IMAGE, APPBOX_CONFIG_DIR, APPBOX_CPUS,
@@ -26,6 +35,7 @@ struct AppBox: ParsableCommand {
             Provision.self,
             Shell.self, Exec.self,
             Start.self, Stop.self, Restart.self,
+            Use.self, Set.self,
             List.self, IP.self, Info.self, Destroy.self,
         ],
         defaultSubcommand: List.self
@@ -42,6 +52,8 @@ extension AppBox {
                 With no distro argument, appbox uses $APPBOX_IMAGE, then the distro
                 saved by 'set-default'. If neither is set it prints the distro menu
                 rather than silently picking one.
+
+                Creates a container machine unless you pass --container.
                 """)
 
         @Argument(help: "Name of the box.")
@@ -50,28 +62,25 @@ extension AppBox {
         @Argument(help: "Distro shortcut (ubuntu, fedora43, rocky9…) or a raw image reference.")
         var token: String?
 
-        @Flag(name: .long, help: "Skip the toolset and user account — a bare container.")
+        @Flag(name: .long, help: "Skip the toolset and account setup — the image as it shipped.")
         var bare = false
 
         @OptionGroup var options: CreateOptions
 
         func run() throws {
             let reporter = CLIReporter()
-            let manager = try Context.makeManager(reporter: reporter)
-
-            let request = BoxManager.CreateRequest(
-                name: name, token: token, bare: bare,
-                cpus: options.cpus, memory: options.memory)
+            let service = try Context.makeService(reporter: reporter)
 
             // Surface the distro menu instead of a bare error.
             do {
-                _ = try manager.resolveImage(for: request)
+                _ = try service.resolveImage(token: token, name: name)
             } catch AppBoxError.noDistroSpecified {
                 printCreateGuidance(name: name)
                 throw ExitCode(1)
             }
 
-            let box = try manager.create(request, reporter: reporter)
+            let box = try service.create(
+                name: name, token: token, bare: bare, options: options, reporter: reporter)
             printInfo(box)
             FileHandle.standardError.write(
                 Data("\nShell in with:  \u{1B}[1mappbox shell \(name)\u{1B}[0m\n".utf8))
@@ -91,8 +100,8 @@ protocol DistroCreateCommand: ParsableCommand {
 extension DistroCreateCommand {
     func run() throws {
         let reporter = CLIReporter()
-        let manager = try Context.makeManager(reporter: reporter)
-        try manager.createFromDistro(
+        let service = try Context.makeService(reporter: reporter)
+        try service.createFromDistro(
             Self.distro,
             arguments: bare ? arguments + ["--bare"] : arguments,
             options: options,
@@ -216,13 +225,21 @@ extension AppBox {
 extension AppBox {
     struct Provision: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Install the standard Unix CLI toolset into an existing box.")
+            abstract: "Install the standard Unix CLI toolset into an existing box.",
+            discussion: """
+                On a machine this also finishes the account setup that
+                'container' leaves undone: passwordless sudo, a bash login
+                shell, and dotfiles in an empty home.
+                """)
 
         @Argument(help: "Name of the box.") var name: String
 
         func run() throws {
             let reporter = CLIReporter()
-            try Context.makeManager(reporter: reporter).provision(name, reporter: reporter)
+            let service = try Context.makeService(reporter: reporter)
+            let box = try Context.requireBox(name, in: service)
+            try service.ensureRunning(box)
+            try service.provision(box, reporter: reporter)
         }
     }
 
@@ -233,22 +250,32 @@ extension AppBox {
 
         @Argument(help: "Name of the box.") var name: String
 
+        @Flag(name: .long, help: "Machines only: open the shell as root.")
+        var root = false
+
         func run() throws {
             let reporter = CLIReporter()
-            let manager = try Context.makeManager(reporter: reporter)
-            guard try manager.client.exists(name) else {
-                throw AppBoxError.boxNotFound(name: name)
+            let service = try Context.makeService(reporter: reporter)
+            let box = try Context.requireBox(name, in: service)
+
+            if !box.isRunning {
+                reporter.info("\(box.kind.rawValue) '\(name)' is stopped; starting it…")
             }
-            if try !manager.client.isRunning(name) {
-                reporter.info("box '\(name)' is stopped; starting it…")
+
+            switch box.kind {
+            case .machine:
+                // `machine run` boots it, picks the login shell and lands as
+                // the host-matching user in their home — nothing to work out.
+                try service.machines.client.runInteractive(name, asRoot: root)
+            case .container:
+                try service.ensureRunning(box)
+                let manager = service.boxes
+                try manager.client.execInteractive(
+                    name,
+                    command: [manager.preferredShell(name)],
+                    user: root ? "root" : manager.loginUser(name),
+                    workdir: root ? nil : manager.loginDirectory(name))
             }
-            try manager.ensureRunning(name)
-            let shell = manager.preferredShell(name)
-            try manager.client.execInteractive(
-                name,
-                command: [shell],
-                user: manager.loginUser(name),
-                workdir: manager.loginDirectory(name))
         }
     }
 
@@ -258,6 +285,9 @@ extension AppBox {
 
         @Argument(help: "Name of the box.") var name: String
 
+        @Flag(name: .long, help: "Machines only: run as root.")
+        var root = false
+
         @Argument(parsing: .captureForPassthrough, help: "Command to run.")
         var command: [String] = []
 
@@ -265,16 +295,27 @@ extension AppBox {
             guard !command.isEmpty else {
                 throw AppBoxError.usage("usage: appbox exec <name> <command...>")
             }
-            let manager = try Context.makeManager()
-            guard try manager.client.exists(name) else {
-                throw AppBoxError.boxNotFound(name: name)
-            }
-            try manager.ensureRunning(name)
+            let service = try Context.makeService()
+            let box = try Context.requireBox(name, in: service)
+            try service.ensureRunning(box)
 
-            let result = try manager.client.exec(
-                name, command,
-                onOutputLine: { print($0) },
-                onErrorLine: { FileHandle.standardError.write(Data(($0 + "\n").utf8)) })
+            let onOut: @Sendable (String) -> Void = { print($0) }
+            let onErr: @Sendable (String) -> Void = {
+                FileHandle.standardError.write(Data(($0 + "\n").utf8))
+            }
+
+            let result: ProcessResult
+            switch box.kind {
+            case .machine:
+                // A shell string would be re-tokenised by `machine run`, so it
+                // goes down stdin instead. Quoting behaves as you would expect.
+                result = try service.machines.client.runScript(
+                    name, command.joined(separator: " "), asRoot: root,
+                    onOutputLine: onOut, onErrorLine: onErr)
+            case .container:
+                result = try service.boxes.client.exec(
+                    name, command, onOutputLine: onOut, onErrorLine: onErr)
+            }
 
             if !result.succeeded { throw ExitCode(result.exitCode) }
         }
@@ -285,7 +326,8 @@ extension AppBox {
         @Argument(help: "Name of the box.") var name: String
         func run() throws {
             let reporter = CLIReporter()
-            try Context.makeManager(reporter: reporter).start(name)
+            let service = try Context.makeService(reporter: reporter)
+            try service.start(Context.requireBox(name, in: service))
             reporter.info("started \(name)")
         }
     }
@@ -296,7 +338,8 @@ extension AppBox {
         @Argument(help: "Name of the box.") var name: String
         func run() throws {
             let reporter = CLIReporter()
-            try Context.makeManager(reporter: reporter).stop(name)
+            let service = try Context.makeService(reporter: reporter)
+            try service.stop(Context.requireBox(name, in: service))
             reporter.info("stopped \(name)")
         }
     }
@@ -306,25 +349,109 @@ extension AppBox {
         @Argument(help: "Name of the box.") var name: String
         func run() throws {
             let reporter = CLIReporter()
-            try Context.makeManager(reporter: reporter).restart(name)
+            let service = try Context.makeService(reporter: reporter)
+            try service.restart(Context.requireBox(name, in: service))
             reporter.info("restarted \(name)")
+        }
+    }
+
+    struct Use: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Make a machine the default for bare 'container machine' commands.",
+            discussion: """
+                Machines only. After 'appbox use dev', 'container machine run'
+                with no -n operates on dev.
+                """)
+
+        @Argument(help: "Name of the machine.") var name: String
+
+        func run() throws {
+            let reporter = CLIReporter()
+            let service = try Context.makeService(reporter: reporter)
+            let box = try Context.requireBox(name, in: service)
+            guard box.kind == .machine else {
+                throw AppBoxError.usage(
+                    "'\(name)' is a container; only machines have a default")
+            }
+            try service.machines.setDefault(name)
+            reporter.info("'\(name)' is now the default machine")
+        }
+    }
+
+    struct Set: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Change a machine's CPUs, memory or home-mount mode.",
+            discussion: """
+                Machines only, and read at boot — a running machine is stopped
+                and started again so the change actually takes effect.
+
+                  appbox set dev --cpus 8 --memory 16G
+                  appbox set dev --home-mount ro
+                """)
+
+        @Argument(help: "Name of the machine.") var name: String
+
+        @Option(name: .customLong("cpus"), help: "Number of virtual CPUs.")
+        var cpus: Int?
+
+        @Option(name: .customLong("memory"), help: "Memory allocation (e.g. 8G).")
+        var memory: String?
+
+        @Option(name: .customLong("home-mount"),
+                help: "How your Mac home is mounted (rw, ro, none).")
+        var homeMount: String?
+
+        func run() throws {
+            let reporter = CLIReporter()
+            let service = try Context.makeService(reporter: reporter)
+            let box = try Context.requireBox(name, in: service)
+            guard box.kind == .machine else {
+                throw AppBoxError.usage(
+                    "'\(name)' is a container; recreate it to change its resources")
+            }
+
+            var mount: HomeMount?
+            if let homeMount {
+                guard let parsed = HomeMount(rawValue: homeMount.lowercased()) else {
+                    throw AppBoxError.usage(
+                        "--home-mount must be rw, ro or none (got '\(homeMount)')")
+                }
+                mount = parsed
+            }
+
+            guard cpus != nil || memory != nil || mount != nil else {
+                throw AppBoxError.usage(
+                    "nothing to set — pass --cpus, --memory or --home-mount")
+            }
+
+            try service.machines.configure(
+                name, cpus: cpus, memory: memory, homeMount: mount, reporter: reporter)
         }
     }
 
     struct Destroy: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Delete the box (keeps host data unless --purge).",
+            abstract: "Delete the box. Containers keep their host data unless --purge.",
+            discussion: """
+                A machine's disk always goes with it — there is no way to keep
+                it. Your Mac home was mounted in rather than copied, so nothing
+                there is affected.
+                """,
             aliases: ["rm"])
 
         @Argument(help: "Name of the box.") var name: String
 
-        @Flag(name: .long, help: "Also delete the host data directory.")
+        @Flag(name: .long, help: "Containers only: also delete the host data directory.")
         var purge = false
 
         func run() throws {
             let reporter = CLIReporter()
-            try Context.makeManager(reporter: reporter)
-                .destroy(name, purge: purge, reporter: reporter)
+            let service = try Context.makeService(reporter: reporter)
+            let box = try Context.requireBox(name, in: service)
+            if purge && box.kind == .machine {
+                reporter.warn("--purge means nothing for a machine; its disk always goes")
+            }
+            try service.destroy(box, purge: purge, reporter: reporter)
         }
     }
 }
@@ -342,8 +469,8 @@ extension AppBox {
         var all = false
 
         func run() throws {
-            let manager = try Context.makeManager()
-            let boxes = try manager.list(includeForeign: true)
+            let service = try Context.makeService()
+            let boxes = try service.list(includeForeign: true)
             let shown = all ? boxes : boxes.filter { $0.managed != .foreign }
 
             guard !shown.isEmpty else {
@@ -351,10 +478,12 @@ extension AppBox {
                 return
             }
 
-            let rows: [[String]] = [["NAME", "STATE", "DISTRO", "IP", "CPUS", "MEMORY", "IMAGE"]]
+            let rows: [[String]] =
+                [["NAME", "KIND", "STATE", "DISTRO", "IP", "CPUS", "MEMORY", "IMAGE"]]
                 + shown.map { box in
                     [
-                        box.name,
+                        box.name + (box.isDefault ? " *" : ""),
+                        box.kind.rawValue,
                         box.state.rawValue,
                         box.distro ?? (box.managed == .foreign ? "-" : "?"),
                         box.ipv4 ?? "",
@@ -395,17 +524,19 @@ extension AppBox {
             commandName: "ip", abstract: "Print the box's IP address.")
         @Argument(help: "Name of the box.") var name: String
         func run() throws {
-            let box = try Context.makeManager().requireBox(name)
+            let service = try Context.makeService()
+            let box = try Context.requireBox(name, in: service)
             if let ipv4 = box.ipv4 { print(ipv4) }
         }
     }
 
     struct Info: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Show name/state/ip/data-dir for a box.")
+            abstract: "Show what a box is, where its files are, and how it is configured.")
         @Argument(help: "Name of the box.") var name: String
         func run() throws {
-            printInfo(try Context.makeManager().requireBox(name))
+            let service = try Context.makeService()
+            printInfo(try Context.requireBox(name, in: service))
         }
     }
 }

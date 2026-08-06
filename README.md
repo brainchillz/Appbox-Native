@@ -1,26 +1,35 @@
 # AppBox
 
-**LXC-style Linux containers on Apple Silicon, from your menu bar.**
+**Persistent Linux machines on Apple Silicon, from your menu bar.**
 
 A native macOS app and CLI built on Apple's
 [`container`](https://github.com/apple/container) tool. A *box* is a named,
 persistent Linux machine — closer to WSL than to a Docker container.
 
 Every box comes as a **full Linux install**: the standard CLI toolset, an
-account matching your Mac user, and a home directory kept on the host. Files
-you create in Linux belong to you on the Mac and vice versa, and your home
-survives destroying and rebuilding the box.
+account matching your Mac user with passwordless sudo, a bash login shell and
+dotfiles. Files you create in Linux belong to you on the Mac and vice versa.
 
 A persistent icon by the clock lists every box with its running state and a
 switch to flip it on or off. Create, provision, inspect and destroy boxes from a
 management window, and open a real shell in Terminal with one click.
 
+Since 0.3, AppBox drives Apple's **container machines** as well as its own
+containers, and machines are the default. A machine runs the image's own init
+system, so `systemctl enable --now nginx` works and comes back after a restart,
+and your Mac home is mounted inside at `/Users/<you>` — edit on the Mac, build
+in Linux, the same files rather than a copy. AppBox adds what a bare machine
+lacks: a distro picker that only offers images that actually run on arm64, an
+init system baked into images that ship without one, the standard toolset, sudo,
+bash and a furnished home.
+
 <p align="center">
-  <img src="docs/screenshots/menu-bar.png" width="390" alt="The AppBox menu bar dropdown listing three running boxes with state dots and on/off switches">
+  <img src="docs/screenshots/menu-bar.png" width="371" alt="The AppBox menu bar dropdown listing two running machines and three stopped containers, each with a state dot and an on/off switch">
 </p>
 
 <p align="center">
-  <em>Every box, its state, and a switch — without leaving what you were doing.</em>
+  <em>Every box, its state, and a switch — without leaving what you were doing.<br>
+  Machines and classic containers in one list; the badge marks the exception.</em>
 </p>
 
 ---
@@ -56,12 +65,32 @@ scrollback, no embedded-terminal compromises.
 
 ---
 
+## Two kinds of box
+
+|  | Machine *(default)* | Container |
+|---|---|---|
+| Init system | the image's own — systemd where it has one | none (`sleep infinity`) |
+| Services | `systemctl` works, survives restart | start daemons by hand |
+| Your Mac home | mounted at `/Users/<you>`, shared by every machine | not mounted |
+| Private home | no — `/home/<you>` dies with the machine | yes, kept on the host |
+| `/data` | no | yes, kept on the host |
+| Survives destroy | nothing (your Mac home is untouched) | home and `/data` |
+| Needs | `container` 1.1.0+ | any `container` |
+
+Machines are what AppBox's containers were always imitating, and Apple does it
+better. Create a container when you specifically want the isolated home or
+`/data`: `appbox create dev ubuntu --container`, or the Kind picker in the New
+Box window. Existing boxes keep working exactly as before and are listed
+alongside machines with a `container` badge.
+
 ## Requirements
 
 - **Apple Silicon Mac** (M1 or later) running **macOS 15 or newer**
 - **Apple's `container` CLI** — install the signed `.pkg` from
   [github.com/apple/container/releases](https://github.com/apple/container/releases).
   There is no Homebrew cask. AppBox drives this tool; it is not optional.
+  **1.1.0 or newer** for machines; on anything older AppBox creates containers
+  and hides the choice.
 
 To build from source you also need **Xcode 26 / Swift 6**.
 
@@ -103,26 +132,42 @@ doesn't even have `curl` or `ping`. It's idempotent, so it's safe to re-run.
 ### CLI
 
 ```
-appbox create        <name> [image|distro] [--full]   # uses your default distro if none given
+appbox create        <name> [image|distro]            # uses your default distro if none given
 appbox create-ubuntu <name> [24.04|26.04|latest]      # latest = newest LTS
 appbox create-debian <name> [version|latest]
 appbox create-alpine <name> [version|latest]
 appbox create-fedora <name> [43|44|latest]
 appbox create-rocky  <name> [9|10|latest]             # latest = 10
 appbox create-arch   <name>                           # rolling — always latest
-                                                      # add --bare for no toolset/user
+
+  --container            make a classic box instead of a machine
+  --home-mount rw|ro|none    machines: how your Mac home is mounted
+  --default              machines: make this the default machine
+  --bare                 skip the toolset and account setup
+  --cpus N --memory 8G
 
 appbox set-default   [distro|--clear]   # distro used by a bare `create`
-appbox provision     <name>             # install the standard toolset
-appbox shell         <name>             # interactive shell (auto-starts the box)
-appbox exec          <name> <cmd...>
+appbox provision     <name>             # toolset, and on a machine sudo/bash/dotfiles
+appbox shell         <name> [--root]    # interactive shell (auto-starts the box)
+appbox exec          [--root] <name> <cmd...>
+appbox use           <name>             # machines: make it the default
+appbox set           <name> [--cpus N] [--memory 8G] [--home-mount ro]
 appbox start|stop|restart|list|ip|info|destroy <name>
 ```
 
-Boxes are fully provisioned by default; pass `--bare` for a plain container
-with no toolset and no user account. The version and name may be given in
-**either order** — `create-ubuntu web 24.04` and `create-ubuntu 24.04 web` are
-equivalent.
+Boxes are fully provisioned by default; pass `--bare` for the image as it
+shipped. The version and name may be given in **either order** —
+`create-ubuntu web 24.04` and `create-ubuntu 24.04 web` are equivalent.
+
+Flags come before the box name on `exec`; everything after the name is passed
+through untouched, quoting included:
+
+```sh
+appbox exec dev 'systemctl is-active nginx'
+appbox exec --root dev 'apt-get install -y postgresql'
+```
+
+`appbox list` shows both kinds, with a `*` against the default machine.
 
 A bare `appbox create <name>` does not silently pick a distro. It uses
 `$APPBOX_IMAGE`, then the distro saved by `set-default`, and otherwise prints a
@@ -156,28 +201,58 @@ Any other value is passed through as a raw image reference, so
 
 ## What persists
 
+**Machines:**
+
+| | Survives stop/start | Survives destroy |
+|---|---|---|
+| Everything inside, including installed packages and services | yes | no |
+| `/home/<you>` — on the machine's own disk | yes | no |
+| `/Users/<you>` — your Mac home, mounted in | yes | **yes** — it's on the Mac |
+
+A machine's disk always goes when the machine does; there is no keeping it. That
+is not the loss it sounds like, because the files you care about live in your
+Mac home, which was mounted rather than copied. Work there and a destroyed
+machine costs you installed packages, not your work.
+
+The flip side is that every machine sees that same one home, with no isolation
+between them — `rm -rf ~` inside reaches your real files. Create a machine with
+`--home-mount ro` (or `none`) when that matters.
+
+**Containers:**
+
 | | Survives stop/start | Survives destroy |
 |---|---|---|
 | Everything inside the box | yes | no |
 | `/home/<you>` → `$APPBOX_HOME/<name>/home` | yes | **yes** |
 | `/data` → `$APPBOX_HOME/<name>/data` | yes | **yes** |
 
-So you can `destroy` a box and recreate it on a newer distro release, or with
-different CPU and memory, and your dotfiles, keys, shell history and checkouts
-come back with it. `--purge` deletes the host directories too.
+So you can `destroy` a container and recreate it on a newer distro release, or
+with different CPU and memory, and your dotfiles, keys, shell history and
+checkouts come back with it. `--purge` deletes the host directories too.
 
-Your box user is created at your Mac account's uid and gid, which is what makes
-the shared directories behave — a file written inside the box is owned by you
-on the Mac, with no permission juggling.
+Either way your Linux account is created at your Mac account's uid and gid,
+which is what makes the shared directories behave — a file written inside is
+owned by you on the Mac, with no permission juggling.
 
 ## Caveats
 
 Please read these — several are inherited from Apple's `container` and are not
 things AppBox can fix.
 
-**No systemd.** Boxes run an init process parked on `sleep infinity`, so
-systemd-dependent services — auto-starting sshd, cron, `systemctl` — are not
-supported. Attach with `appbox shell` and launch daemons manually.
+**Containers have no systemd.** A container runs an init process parked on
+`sleep infinity`, so systemd-dependent services — auto-starting sshd, cron,
+`systemctl` — are not supported there. Attach with `appbox shell` and launch
+daemons manually. Machines do not have this limitation.
+
+**Machines can't mount anything but your home.** Apple's `machine create` takes
+no `--volume`, so there is no `/data` and no private per-box home. If you need
+either, create a container.
+
+**Machines take a minute the first time you use a distro.** Most images have no
+init system and cannot boot as a machine at all, so AppBox builds one — the
+upstream image plus an init system and the toolset — and caches it as
+`appbox-machine/<distro>`. Every later machine of that distro is created in
+seconds.
 
 **IP addresses are DHCP** and can change when a box restarts. Use the box name
 or `appbox ip <name>`; never hardcode an address.
@@ -200,6 +275,11 @@ container kernel does not support.
 
 **Rocky publishes no `latest` tag**, so `latest` resolves to the newest major
 (10).
+
+**`$HOME` inside a machine is not your Mac home.** `/home/<you>` is a real Linux
+home on the machine's own disk; your Mac home is mounted separately at
+`/Users/<you>`. Apple's container-machine documentation says `pwd` lands you in
+your Mac home — it does not.
 
 **`id` may report an odd group name.** Your box user takes your Mac gid (20),
 which most distributions already use for something else — Debian, Ubuntu and
@@ -257,13 +337,18 @@ untouched.
 
 Early but functional. Working: the menu bar list with live state and toggles,
 create, provision, destroy, shell-in-Terminal, logs, service-health banners, CLI
-installation, and the full command line interface. Boxes are full Linux installs
-with their own user account and a persistent home.
+installation, and the full command line interface — all of it across both
+machines and containers. Boxes are full Linux installs with their own user
+account.
 
 Releases are signed with a Developer ID certificate and notarized by Apple.
 
-Not done: SSH access and VS Code Remote, mounting your Mac home into a box,
-port publishing, export/import, and auto-updates.
+Not done: SSH access and VS Code Remote, port publishing, export/import, and
+auto-updates. Nested virtualization and custom kernels (`container machine`
+supports both) are in the engine but not yet exposed.
+
+The New Box, manager and shell screenshots above predate machines and show the
+older UI; only the menu bar shot is current.
 
 ## License
 

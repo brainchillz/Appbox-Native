@@ -11,26 +11,33 @@ struct ManagerView: View {
     @State private var selection: String?
 
     private var selectedBox: Box? {
-        store.managedBoxes.first { $0.name == selection }
+        store.managedBoxes.first { $0.id == selection }
     }
 
     var body: some View {
         NavigationSplitView {
-            List(store.managedBoxes, id: \.name, selection: $selection) { box in
+            List(store.managedBoxes, selection: $selection) { box in
                 HStack(spacing: 8) {
-                    StateDot(state: box.state, busy: store.busy.contains(box.name))
+                    StateDot(state: box.state, busy: store.isBusy(box))
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(box.name)
-                        Text(box.distro ?? "unknown")
+                        HStack(spacing: 4) {
+                            Text(box.name)
+                            if box.isDefault {
+                                Image(systemName: "star.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Text(subtitle(for: box))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if store.busy.contains(box.name) {
+                    if store.isBusy(box) {
                         ProgressView().controlSize(.small)
                     }
                 }
-                .tag(box.name)
+                .tag(box.id)
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 230)
             .safeAreaInset(edge: .bottom) {
@@ -70,9 +77,15 @@ struct ManagerView: View {
         }
         .task {
             store.menuIsOpen = true
-            if selection == nil { selection = store.managedBoxes.first?.name }
+            if selection == nil { selection = store.managedBoxes.first?.id }
         }
         .onDisappear { store.menuIsOpen = false }
+    }
+
+    /// Distro plus, for the exception rather than the rule, the kind.
+    private func subtitle(for box: Box) -> String {
+        let distro = box.distro ?? "unknown"
+        return box.kind == .container ? "\(distro) · container" : distro
     }
 }
 
@@ -82,7 +95,7 @@ struct BoxDetailView: View {
     @State private var logText = ""
     @State private var loadingLogs = false
 
-    private var isBusy: Bool { store.busy.contains(box.name) }
+    private var isBusy: Bool { store.isBusy(box) }
 
     var body: some View {
         ScrollView {
@@ -108,6 +121,12 @@ struct BoxDetailView: View {
                 .padding(.horizontal, 7)
                 .padding(.vertical, 2)
                 .background(.quaternary, in: Capsule())
+            Text(box.kind.title.lowercased())
+                .font(.caption)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(.quaternary, in: Capsule())
+                .help(box.kind.summary)
             Spacer()
             if isBusy { ProgressView().controlSize(.small) }
         }
@@ -142,6 +161,16 @@ struct BoxDetailView: View {
                 Label("Install Toolset", systemImage: "shippingbox.and.arrow.backward")
             }
 
+            if box.kind == .machine {
+                Button {
+                    store.makeDefault(box)
+                } label: {
+                    Label("Make Default", systemImage: "star")
+                }
+                .disabled(box.isDefault)
+                .help("Use this machine for 'container machine' commands with no -n")
+            }
+
             Spacer()
 
             Button(role: .destructive) {
@@ -166,17 +195,59 @@ struct BoxDetailView: View {
                 row("User", "root only (bare box)")
             }
 
-            if let home = box.homeDirectory {
-                row("Home", home.path, monospaced: true, reveal: home)
+            switch box.kind {
+            case .machine:
+                machineRows
+            case .container:
+                containerRows
             }
-            row("Host data", box.dataDirectory.path, monospaced: true, reveal: box.dataDirectory)
 
-            if box.managed == .inferred {
-                row("Managed", "Yes — detected by shape (created before appbox used labels)")
-            }
             if let created = box.createdAt {
                 row("Created", created)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var machineRows: some View {
+        if let disk = box.diskDescription {
+            row("Disk", "\(disk) used — the volume inside reports ~500G, sparse")
+        }
+
+        // The shared Mac home is the single most surprising thing about a
+        // machine, so it is spelled out rather than shown as a bare path.
+        switch box.homeMount ?? .rw {
+        case .none:
+            row("Mac home", "Not mounted — this machine cannot see your Mac files")
+        case .ro, .rw:
+            let mount = box.homeMount ?? .rw
+            if let home = box.homeDirectory {
+                row(
+                    "Mac home", "\(home.path) → /Users/\(NSUserName())  (\(mount.summary))",
+                    monospaced: true, reveal: home)
+            }
+        }
+
+        row(
+            "Linux home",
+            "/home/\(box.user ?? NSUserName()) — on the machine's own disk, "
+                + "deleted with the machine")
+
+        if box.isDefault {
+            row("Default", "Yes — 'container machine' commands with no -n use this one")
+        }
+    }
+
+    @ViewBuilder
+    private var containerRows: some View {
+        if let home = box.homeDirectory {
+            row("Home", home.path, monospaced: true, reveal: home)
+        }
+        if let data = box.dataDirectory {
+            row("Host data", data.path, monospaced: true, reveal: data)
+        }
+        if box.managed == .inferred {
+            row("Managed", "Yes — detected by shape (created before appbox used labels)")
         }
     }
 
@@ -250,20 +321,6 @@ struct BoxDetailView: View {
     }
 
     private func confirmDestroy() {
-        let alert = NSAlert()
-        alert.messageText = "Destroy “\(box.name)”?"
-        alert.informativeText =
-            "The container is deleted. Host data in \(box.dataDirectory.path) is kept "
-            + "unless you also choose to delete it."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Destroy")
-        alert.addButton(withTitle: "Cancel")
-
-        let purge = NSButton(checkboxWithTitle: "Also delete host data", target: nil, action: nil)
-        alert.accessoryView = purge
-
-        if alert.runModal() == .alertFirstButtonReturn {
-            store.destroy(box, purge: purge.state == .on)
-        }
+        DestroyPrompt.run(box: box, store: store)
     }
 }

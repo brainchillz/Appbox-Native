@@ -14,7 +14,7 @@ enum ServiceHealth: Equatable {
 
 /// Observable state behind the menu bar and manager window.
 ///
-/// All container work happens off the main actor — `BoxManager` is synchronous
+/// All container work happens off the main actor — `BoxService` is synchronous
 /// and some operations (image pulls, provisioning) take minutes.
 @MainActor
 @Observable
@@ -23,12 +23,17 @@ final class BoxStore {
     private(set) var health: ServiceHealth = .ok
     private(set) var isLoading = false
     /// Names of boxes with an operation in flight, so rows can show a spinner
-    /// and avoid double-clicks.
+    /// and avoid double-clicks. Keyed by kind as well as name, since a machine
+    /// and a container may share one.
     private(set) var busy: Set<String> = []
     var lastError: String?
 
     /// Long-running jobs (create, provision) surfaced as progress text.
     private(set) var activity: String?
+
+    /// Whether the installed `container` can do machines at all. Drives whether
+    /// the New Box window offers the choice.
+    private(set) var machinesAvailable = false
 
     /// Poll fast while the user is looking, slowly otherwise. Apple's CLI has
     /// no event stream, so polling is the only way to notice external changes.
@@ -40,11 +45,13 @@ final class BoxStore {
     /// Terminal (which does not inherit this app's discovery).
     private(set) var containerBinary: URL?
 
-    private var manager: BoxManager?
+    private var service: BoxService?
     private var pollTask: Task<Void, Never>?
 
     var managedBoxes: [Box] { boxes.filter { $0.managed != .foreign } }
     var runningCount: Int { managedBoxes.filter(\.isRunning).count }
+
+    func isBusy(_ box: Box) -> Bool { busy.contains(box.id) }
 
     init() {
         connect()
@@ -55,12 +62,14 @@ final class BoxStore {
 
     private func connect() {
         do {
-            let client = try ContainerClient.discover()
-            manager = BoxManager(client: client, config: .fromEnvironment())
-            containerBinary = client.binary
+            let service = try BoxService.discover()
+            self.service = service
+            containerBinary = service.client.binary
+            machinesAvailable = service.machinesAvailable
         } catch {
-            manager = nil
+            service = nil
             containerBinary = nil
+            machinesAvailable = false
             health = .cliMissing
         }
     }
@@ -79,19 +88,20 @@ final class BoxStore {
     // MARK: - Refresh
 
     func refresh() async {
-        if manager == nil { connect() }
-        guard let manager else { return }
+        if service == nil { connect() }
+        guard let service else { return }
 
         isLoading = true
         defer { isLoading = false }
 
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<([Box], ServiceHealth), Error> in
-            guard manager.client.isServiceRunning() else {
+        let result = await Task.detached(priority: .userInitiated) {
+            () -> Result<([Box], ServiceHealth), Error> in
+            guard service.isServiceRunning() else {
                 return .success(([], .serviceStopped))
             }
             do {
-                let boxes = try manager.list(includeForeign: false)
-                let skew = manager.client.versionSkew()
+                let boxes = try service.list(includeForeign: false)
+                let skew = service.client.versionSkew()
                 let health: ServiceHealth = skew.map {
                     .versionSkew(cli: $0.cli, daemon: $0.daemon)
                 } ?? .ok
@@ -114,27 +124,27 @@ final class BoxStore {
     // MARK: - Service control
 
     func startService() {
-        run(activity: "Starting the container service…") { manager in
-            try manager.client.startService()
+        run(activity: "Starting the container service…") { service in
+            try service.client.startService()
         }
     }
 
     /// A CLI/daemon skew breaks networking; restarting the daemon is the fix.
     func restartService() {
-        run(activity: "Restarting the container service…") { manager in
-            _ = try? manager.client.run(["system", "stop"])
-            try manager.client.startService()
+        run(activity: "Restarting the container service…") { service in
+            _ = try? service.client.run(["system", "stop"])
+            try service.client.startService()
         }
     }
 
     // MARK: - Box actions
 
     func start(_ box: Box) {
-        run(box: box.name) { try $0.start(box.name) }
+        run(box: box) { try $0.start(box) }
     }
 
     func stop(_ box: Box) {
-        run(box: box.name) { try $0.stop(box.name) }
+        run(box: box) { try $0.stop(box) }
     }
 
     func toggle(_ box: Box) {
@@ -142,71 +152,96 @@ final class BoxStore {
     }
 
     func restart(_ box: Box) {
-        run(box: box.name) { try $0.restart(box.name) }
+        run(box: box) { try $0.restart(box) }
     }
 
     func provision(_ box: Box) {
-        run(box: box.name, activity: "Installing the standard toolset in \(box.name)…") {
-            try $0.provision(box.name)
-        }
+        let what = box.kind == .machine
+            ? "Installing the toolset and finishing setup in \(box.name)…"
+            : "Installing the standard toolset in \(box.name)…"
+        run(box: box, activity: what) { try $0.provision(box) }
     }
 
     func destroy(_ box: Box, purge: Bool) {
-        run(box: box.name, activity: "Destroying \(box.name)…") {
-            try $0.destroy(box.name, purge: purge)
+        run(box: box, activity: "Destroying \(box.name)…") {
+            try $0.destroy(box, purge: purge)
         }
     }
 
-    func create(name: String, token: String, bare: Bool, cpus: Int?, memory: String?) {
-        let label = !bare
-            ? "Creating \(name)…"
-            : "Creating a bare \(name)…"
-        run(box: name, activity: label) { manager in
-            _ = try manager.create(
-                BoxManager.CreateRequest(
-                    name: name, token: token, bare: bare, cpus: cpus, memory: memory))
+    /// Machines only: make this the one bare `container machine` commands use.
+    func makeDefault(_ box: Box) {
+        guard box.kind == .machine else { return }
+        run(box: box) { try $0.machines.setDefault(box.name) }
+    }
+
+    func create(
+        kind: BoxKind,
+        name: String,
+        token: String,
+        bare: Bool,
+        cpus: Int?,
+        memory: String?,
+        homeMount: HomeMount?
+    ) {
+        let label = bare
+            ? "Creating a bare \(kind.rawValue) \(name)…"
+            : "Creating \(name)… (the first \(kind.rawValue) of a distro builds an image)"
+
+        run(key: "\(kind.rawValue):\(name)", activity: label) { service in
+            _ = try service.create(
+                kind: kind, name: name, token: token, bare: bare,
+                cpus: cpus, memory: memory, homeMount: homeMount)
         }
     }
 
     /// Fetch recent log output for a box.
     func logs(for box: Box) async -> String {
-        guard let manager else { return "" }
+        guard let service else { return "" }
         return await Task.detached(priority: .userInitiated) { () -> String in
-            let result = try? manager.client.run(["logs", box.name])
-            guard let result else { return "" }
-            let combined = result.stdout + result.stderr
-            return combined.isEmpty
-                ? "No log output.\n\nBoxes run `sleep infinity` as their init process, "
+            let text = service.logs(box)
+            guard text.isEmpty else { return text }
+
+            return box.kind == .machine
+                ? "No log output yet. A machine's console is quiet unless "
+                    + "something it runs writes to it."
+                : "No log output.\n\nContainers run `sleep infinity` as their init process, "
                     + "so there is usually nothing here — open a shell instead."
-                : combined
         }.value
     }
 
     // MARK: - Plumbing
 
-    /// Run a container operation off the main actor, tracking busy state and
-    /// refreshing when it finishes.
+    /// Run an operation off the main actor, tracking busy state and refreshing
+    /// when it finishes.
     private func run(
-        box: String? = nil,
+        box: Box,
         activity: String? = nil,
-        operation: @escaping @Sendable (BoxManager) throws -> Void
+        operation: @escaping @Sendable (BoxService) throws -> Void
     ) {
-        guard let manager else { return }
+        run(key: box.id, activity: activity, operation: operation)
+    }
 
-        if let box { busy.insert(box) }
+    private func run(
+        key: String? = nil,
+        activity: String? = nil,
+        operation: @escaping @Sendable (BoxService) throws -> Void
+    ) {
+        guard let service else { return }
+
+        if let key { busy.insert(key) }
         if let activity { self.activity = activity }
 
         Task {
             let error = await Task.detached(priority: .userInitiated) { () -> String? in
                 do {
-                    try operation(manager)
+                    try operation(service)
                     return nil
                 } catch {
                     return error.localizedDescription
                 }
             }.value
 
-            if let box { busy.remove(box) }
+            if let key { busy.remove(key) }
             if activity != nil { self.activity = nil }
             if let error { lastError = error }
             await refresh()

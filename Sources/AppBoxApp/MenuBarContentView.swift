@@ -91,9 +91,9 @@ struct MenuBarContentView: View {
         } else {
             ScrollView {
                 VStack(spacing: 0) {
-                    ForEach(store.managedBoxes, id: \.name) { box in
+                    ForEach(store.managedBoxes) { box in
                         BoxRow(box: box, store: store)
-                        if box.name != store.managedBoxes.last?.name {
+                        if box.id != store.managedBoxes.last?.id {
                             Divider().padding(.leading, 34)
                         }
                     }
@@ -172,14 +172,31 @@ struct BoxRow: View {
     @Bindable var store: BoxStore
     @State private var isHovering = false
 
-    private var isBusy: Bool { store.busy.contains(box.name) }
+    private var isBusy: Bool { store.isBusy(box) }
 
     var body: some View {
         HStack(spacing: 10) {
             StateDot(state: box.state, busy: isBusy)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(box.name).font(.body)
+                HStack(spacing: 5) {
+                    Text(box.name).font(.body)
+                    if box.kind == .container {
+                        // Machines are the norm now, so the badge marks the
+                        // exception rather than labelling every row.
+                        Text("container")
+                            .font(.caption2)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 3))
+                    }
+                    if box.isDefault {
+                        Image(systemName: "star.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help("The default machine")
+                    }
+                }
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -198,6 +215,9 @@ struct BoxRow: View {
                         Divider()
                         Button("Restart") { store.restart(box) }
                         Button("Install Standard Toolset") { store.provision(box) }
+                        if box.kind == .machine && !box.isDefault {
+                            Button("Make Default Machine") { store.makeDefault(box) }
+                        }
                         Divider()
                         Button("Destroy…", role: .destructive) { confirmDestroy() }
                     } label: {
@@ -233,6 +253,7 @@ struct BoxRow: View {
         if let ip = box.ipv4 { parts.append(ip) }
         else if !box.isRunning { parts.append("stopped") }
         parts.append("\(box.cpus) CPU · \(box.memory)")
+        if let disk = box.diskDescription { parts.append(disk) }
         return parts.joined(separator: " · ")
     }
 
@@ -247,22 +268,48 @@ struct BoxRow: View {
     }
 
     private func confirmDestroy() {
+        activateApp()
+        DestroyPrompt.run(box: box, store: store)
+    }
+}
+
+/// The destroy confirmation, shared by the dropdown and the manager window.
+///
+/// The two kinds lose different things, and saying which is the whole point of
+/// the prompt: a container keeps its host data unless you tick the box, while a
+/// machine's disk always goes — but its Mac home was only ever mounted in, so
+/// nothing there is at risk.
+enum DestroyPrompt {
+    @MainActor
+    static func run(box: Box, store: BoxStore) {
         let alert = NSAlert()
         alert.messageText = "Destroy “\(box.name)”?"
-        alert.informativeText =
-            "The container is deleted. Host data in \(box.dataDirectory.path) is kept "
-            + "unless you also choose to delete it."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Destroy")
         alert.addButton(withTitle: "Cancel")
 
-        let purge = NSButton(checkboxWithTitle: "Also delete host data", target: nil, action: nil)
-        purge.state = .off
-        alert.accessoryView = purge
+        var purge: NSButton?
 
-        activateApp()
+        switch box.kind {
+        case .machine:
+            alert.informativeText =
+                "The machine and everything installed inside it are deleted, including "
+                + "anything outside your home directory. Your Mac home was mounted in, "
+                + "not copied — nothing there is affected."
+        case .container:
+            let data = box.dataDirectory?.path ?? "the host data directory"
+            alert.informativeText =
+                "The container is deleted. Host data in \(data) is kept unless you also "
+                + "choose to delete it."
+            let checkbox = NSButton(
+                checkboxWithTitle: "Also delete host data", target: nil, action: nil)
+            checkbox.state = .off
+            alert.accessoryView = checkbox
+            purge = checkbox
+        }
+
         if alert.runModal() == .alertFirstButtonReturn {
-            store.destroy(box, purge: purge.state == .on)
+            store.destroy(box, purge: purge?.state == .on)
         }
     }
 }

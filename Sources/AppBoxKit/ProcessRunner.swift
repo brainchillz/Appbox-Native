@@ -60,11 +60,17 @@ public enum ProcessRunner {
     ///
     /// Both pipes are drained on background queues before waiting, so a command
     /// that writes more than a pipe buffer's worth of output cannot deadlock.
+    /// - Parameter stdin: Text to feed the command on standard input. This is
+    ///   how appbox runs scripts inside a container machine: `container machine
+    ///   run` re-tokenises its trailing arguments, so a `sh -c '<script>'` on
+    ///   the command line arrives mangled, while a script on stdin arrives
+    ///   byte-for-byte. See `MachineClient.runScript`.
     @discardableResult
     public static func run(
         _ executable: URL,
         _ arguments: [String],
         environment: [String: String]? = nil,
+        stdin: String? = nil,
         onOutputLine: (@Sendable (String) -> Void)? = nil,
         onErrorLine: (@Sendable (String) -> Void)? = nil
     ) throws -> ProcessResult {
@@ -77,9 +83,21 @@ public enum ProcessRunner {
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
-        process.standardInput = FileHandle.nullDevice
+
+        let inPipe = stdin.map { _ in Pipe() }
+        process.standardInput = inPipe ?? FileHandle.nullDevice
 
         try process.run()
+
+        // Written on a background queue: a script larger than the pipe buffer
+        // would otherwise block here before anything drains the output.
+        if let inPipe, let stdin {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let handle = inPipe.fileHandleForWriting
+                try? handle.write(contentsOf: Data(stdin.utf8))
+                try? handle.close()
+            }
+        }
 
         let collector = OutputCollector()
         let group = DispatchGroup()

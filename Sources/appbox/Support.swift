@@ -2,7 +2,7 @@ import AppBoxKit
 import ArgumentParser
 import Foundation
 
-let appboxVersion = "0.2.1"
+let appboxVersion = "0.3.0"
 
 /// Prints progress in the same idiom the bash script used, so muscle memory and
 /// existing docs still apply. Everything goes to stderr, leaving stdout clean
@@ -29,23 +29,36 @@ struct CLIReporter: ProgressReporter {
 /// Shared setup for every command that touches containers — the equivalent of
 /// the script's `need_container`.
 enum Context {
-    static func makeManager(reporter: CLIReporter = CLIReporter()) throws -> BoxManager {
-        let client = try ContainerClient.discover()
+    /// Both kinds of box behind one door. Every command goes through this.
+    static func makeService(reporter: CLIReporter = CLIReporter()) throws -> BoxService {
+        let service = try BoxService.discover()
 
-        guard client.isServiceRunning() else {
+        guard service.isServiceRunning() else {
             throw AppBoxError.containerServiceNotRunning
         }
 
         // A CLI/daemon version skew commonly breaks networking with
         // "no available interface strategy for network default … variant=nil".
-        if let skew = client.versionSkew() {
+        if let skew = service.client.versionSkew() {
             reporter.warn(
                 "container CLI (\(skew.cli)) and daemon (\(skew.daemon)) versions differ.")
             reporter.warn("  this commonly breaks networking. Restart the daemon to match:")
             reporter.warn("    container system stop && container system start")
         }
 
-        return BoxManager(client: client, config: .fromEnvironment())
+        return service
+    }
+
+    static func makeManager(reporter: CLIReporter = CLIReporter()) throws -> BoxManager {
+        try makeService(reporter: reporter).boxes
+    }
+
+    /// Resolve a name to a box, or fail with a message naming what does exist.
+    static func requireBox(_ name: String, in service: BoxService) throws -> Box {
+        guard let box = try service.find(name) else {
+            throw AppBoxError.boxNotFound(name: name)
+        }
+        return box
     }
 }
 
@@ -62,7 +75,8 @@ func printCreateGuidance(name: String) {
           appbox create-alpine  \(name) [version|latest]
           appbox create-arch    \(name)                        (rolling — always latest)
 
-        Add --full to any of these to also install the standard CLI toolset.
+        Each makes a container machine, fully provisioned. Add --container for a
+        classic box with a private home and /data, or --bare to skip the toolset.
 
         Tip: set a default so a plain 'appbox create <name>' just works:
           appbox set-default ubuntu
@@ -78,9 +92,79 @@ struct CreateOptions: ParsableArguments {
 
     @Option(name: .customLong("memory"), help: "Memory to allocate (default: $APPBOX_MEMORY or 2G).")
     var memory: String?
+
+    @Flag(name: .customLong("machine"),
+          help: "Make a container machine — real init, your Mac home mounted in. The default.")
+    var machine = false
+
+    @Flag(name: .customLong("container"),
+          help: "Make a classic appbox container instead: private home plus /data, no init.")
+    var container = false
+
+    @Option(name: .customLong("home-mount"),
+            help: "Machines only: how your Mac home is mounted (rw, ro, none).")
+    var homeMount: String?
+
+    @Flag(name: .customLong("default"),
+          help: "Machines only: make this the default for 'container machine' commands.")
+    var setDefault = false
+
+    /// The kind to create, or nil to take the service's default.
+    func kind() throws -> BoxKind? {
+        switch (machine, container) {
+        case (true, true):
+            throw AppBoxError.usage("--machine and --container are mutually exclusive")
+        case (true, false): return .machine
+        case (false, true): return .container
+        case (false, false): return nil
+        }
+    }
+
+    func parsedHomeMount() throws -> HomeMount? {
+        guard let homeMount else { return nil }
+        guard let mount = HomeMount(rawValue: homeMount.lowercased()) else {
+            throw AppBoxError.usage(
+                "--home-mount must be rw, ro or none (got '\(homeMount)')")
+        }
+        return mount
+    }
 }
 
-extension BoxManager {
+extension BoxService {
+    /// Create from parsed options, reporting what kind you got and why.
+    @discardableResult
+    func create(
+        name: String,
+        token: String?,
+        bare: Bool,
+        options: CreateOptions,
+        reporter: CLIReporter
+    ) throws -> Box {
+        let requested = try options.kind()
+        let kind = requested ?? defaultKind
+
+        if kind == .container && requested == nil {
+            reporter.warn(
+                "this 'container' has no machine support — making a classic box instead")
+        }
+        if kind == .container && (options.homeMount != nil || options.setDefault) {
+            reporter.warn("--home-mount and --default apply to machines only; ignoring")
+        }
+
+        return try create(
+            kind: kind,
+            name: name,
+            token: token,
+            bare: bare,
+            cpus: options.cpus,
+            memory: options.memory,
+            homeMount: try options.parsedHomeMount(),
+            setDefault: options.setDefault,
+            reporter: reporter)
+    }
+}
+
+extension BoxService {
     /// Shared implementation behind every `create-<distro>` command.
     func createFromDistro(
         _ distro: Distro,
@@ -117,10 +201,8 @@ extension BoxManager {
             ?? distro.rawValue
 
         let box = try create(
-            BoxManager.CreateRequest(
-                name: name, token: token, bare: parsed.bare,
-                cpus: options.cpus, memory: options.memory),
-            reporter: reporter)
+            name: name, token: token, bare: parsed.bare,
+            options: options, reporter: reporter)
 
         printInfo(box)
         FileHandle.standardError.write(
@@ -130,19 +212,44 @@ extension BoxManager {
 
 /// Render the `info` block. Shared by `info` and the tail of `create`.
 func printInfo(_ box: Box) {
-    print("name:    \(box.name)")
-    print("state:   \(box.state.rawValue)")
-    print("ip:      \(box.ipv4 ?? "<none>")")
-    print("image:   \(box.image)")
-    if let distro = box.distro {
-        print("distro:  \(distro)")
+    func field(_ label: String, _ value: String) {
+        print(label.padding(toLength: 11, withPad: " ", startingAt: 0) + value)
     }
-    print("cpus:    \(box.cpus)")
-    print("memory:  \(box.memory)")
-    print("data:    \(box.dataDirectory.path)  (mounted at /data)")
-    if box.managed == .inferred {
-        print("managed: yes (detected by shape — created before appbox added labels)")
-    } else if box.managed == .foreign {
-        print("managed: no (not an appbox box)")
+
+    field("name:", box.name)
+    field("kind:", box.kind.rawValue)
+    field("state:", box.state.rawValue)
+    field("ip:", box.ipv4 ?? "<none>")
+    field("image:", box.image)
+    if let distro = box.distro { field("distro:", distro) }
+    field("cpus:", String(box.cpus))
+    field("memory:", box.memory)
+    if let user = box.user { field("user:", user) }
+
+    switch box.kind {
+    case .machine:
+        if let disk = box.diskDescription {
+            field("disk:", "\(disk) used (the volume inside reports ~500G — it is sparse)")
+        }
+        // Host and guest paths are the same string here: your Mac home is
+        // mounted at its own path inside the machine.
+        let mount = box.homeMount ?? .rw
+        if mount == HomeMount.none {
+            field("mac home:", "not mounted (--home-mount none)")
+        } else if let home = box.homeDirectory {
+            field("mac home:", "\(home.path)  (same path inside, \(mount.summary))")
+        }
+        field("linux home:", "/home/\(box.user ?? NSUserName())  (on the machine's own disk)")
+        if box.isDefault {
+            field("default:", "yes — 'container machine' commands with no -n use this one")
+        }
+    case .container:
+        if let home = box.homeDirectory { field("home:", home.path) }
+        if let data = box.dataDirectory { field("data:", "\(data.path)  (mounted at /data)") }
+        if box.managed == .inferred {
+            field("managed:", "yes (detected by shape — created before appbox added labels)")
+        } else if box.managed == .foreign {
+            field("managed:", "no (not an appbox box)")
+        }
     }
 }

@@ -5,14 +5,28 @@ Keep it current when the interface or the surrounding facts change.
 
 ## What this project is
 
-A native macOS **menu bar app + CLI** for managing LXC-style system containers
-on Apple Silicon, built on Apple's `container` CLI. It is the Swift rewrite of
-an earlier `appbox` bash script.
+A native macOS **menu bar app + CLI** for managing persistent Linux
+environments on Apple Silicon, built on Apple's `container` CLI. It is the Swift
+rewrite of an earlier `appbox` bash script.
 
-A **box** is a container run with `--init` + `sleep infinity` so it stays up in
-the background; you attach with `container exec`. The host directory
-`$APPBOX_HOME/<name>/data` is bind-mounted at `/data` and survives even
-`destroy` (unless `--purge`).
+There are **two kinds of box**, and the whole design turns on the difference.
+
+A **machine** is Apple's own container machine (`container machine`, added in
+`container` 1.1.0). It runs the image's init system — systemd where the image
+has one — and `container` mounts your Mac home at `/Users/<you>` and creates a
+Linux account matching your host uid, gid and name. This is what appbox spent
+its first two versions imitating, and it is the default for new boxes.
+
+A **container** is appbox's original box: `container run --init … sleep
+infinity`, attached with `container exec`. It gets a *private* per-box home plus
+`$APPBOX_HOME/<name>/data` at `/data`, both surviving `destroy` unless
+`--purge`. Machines can do neither, so containers remain a deliberate choice
+rather than a legacy path.
+
+The two live in **separate namespaces** in Apple's CLI — `container machine ls`
+and `container ls` do not see each other, and the same name may exist in both.
+That is why `Box` carries a `kind`, why `Box.id` is `kind:name` rather than the
+name, and why every operation dispatches on a `Box` rather than a bare string.
 
 ## Layout
 
@@ -25,6 +39,13 @@ the background; you attach with `container exec`. The host directory
 | `Tools/make-icon.swift` | Generates `Resources/AppIcon.icns`. |
 | `build-app.sh` | Builds and assembles `build/AppBox.app`. |
 | `package.sh` | Produces a distributable DMG. |
+
+Inside the kit, the split is by kind with a facade over both:
+`ContainerClient`/`BoxManager` for containers, `MachineClient`/`MachineManager`
+for machines, and **`BoxService`** as the single door the CLI and the app use.
+Neither face should ever reach past `BoxService` to a specific manager unless
+the operation genuinely only exists for one kind (`machine set-default`, a
+container's `--purge`).
 
 **There is deliberately no Xcode project.** SPM builds the executables and
 `build-app.sh` assembles the bundle, so everything builds from the terminal.
@@ -50,12 +71,68 @@ the background; you attach with `container exec`. The host directory
 
 ## Key types
 
-`Distro` (token → verified arm64 image, package manager, rolling/latest rules) ·
-`NameVersion` (order-independent name/version parsing) · `PackageSets` (the
-standard toolset per package manager) · `Configuration` (env vars + the saved
-default distro) · `ProcessRunner` · `ContainerClient` (typed wrapper over the
-`container` CLI) · `ContainerModels` (Codable mirrors of its JSON) ·
-`BoxManager` (create/provision/destroy/classify) · `CLIInstaller`.
+Shared: `Distro` (token → verified arm64 image, package manager, rolling/latest
+rules) · `NameVersion` (order-independent name/version parsing) · `PackageSets`
+(the standard toolset per package manager) · `DefaultDotfiles` · `Configuration`
+(env vars + the saved default distro) · `ImageResolver` (token → image, used by
+both kinds so they cannot disagree) · `ProcessRunner` · `Box`/`BoxKind` ·
+`BoxService` (the facade) · `CLIInstaller`.
+
+Containers: `ContainerClient` · `ContainerModels` · `BoxManager` · `BaseImage`
+(cached `appbox-base/` images carrying the toolset **and** the user account).
+
+Machines: `MachineClient` · `MachineModels` · `MachineManager` · `MachineImage`
+(cached `appbox-machine/` images carrying an init system and the toolset, but
+**not** an account — `container` makes that itself on first boot).
+
+## Machine facts, all verified against `container` 1.1.0
+
+These cost real time to find. Do not undo the workarounds without re-testing.
+
+- **`container machine run` re-tokenises its trailing arguments.** A shell
+  string passed as `run -- /bin/sh -c '<script>'` arrives mangled: words are
+  dropped or appended to the wrong argument, so `apt-get install -y curl vim`
+  silently becomes something else. Scripts therefore travel on **stdin**
+  (`MachineClient.runScript` → `run -i -- /bin/sh` with the script piped), which
+  needs `--interactive` because stdin is otherwise not forwarded, and which is
+  why `ProcessRunner.run` grew a `stdin:` parameter. A plain command with
+  separate arguments (`run -- /bin/echo a b c`) is fine.
+- **The first `run` on a freshly created machine rejects piped stdin**, failing
+  with "Inappropriate ioctl for device" — an error that sounds like a terminal
+  problem and is not. Any plain run gets past it, after which piped runs work
+  forever. `MachineClient.warmUp` does exactly that, and `runScript` retries
+  once when it sees that error.
+- **`machine create` returns before the boot finishes.** Running anything in the
+  gap hits the error above. `MachineManager.waitUntilRunning` polls first.
+- **Most images cannot boot as a machine.** A machine runs the image's own init,
+  and `ubuntu:latest` has no `/sbin/init` — the machine is created and then dies
+  with "no PID data from sync pipe". On Debian and Ubuntu the package that
+  provides `/sbin/init` is **`systemd-sysv`**, not `systemd`. Alpine is the only
+  distro appbox offers that boots as shipped (BusyBox init). Every recipe ends
+  with `RUN test -x /sbin/init` so a mistake fails the build, not the boot.
+- **`systemd-modules-load.service` always fails** — the machine kernel loads no
+  modules — leaving `systemctl is-system-running` at "degraded" on an otherwise
+  perfect machine. The recipe masks it.
+- **`list` and `inspect` return different shapes.** `list --format json` is a
+  summary (id, status, cpus, memory, diskSize, ipAddress, **default**) and is
+  the only one that reports the default machine; `inspect` has image,
+  `homeMount` and `userSetup` but no default flag. `MachineRecord` is the union
+  and `MachineClient.list` merges them, one `inspect` per machine.
+- **There is no `machine start`.** Booting is a side effect of `run`, so
+  `MachineClient.boot` runs `/bin/true` detached purely for that.
+- **`machine set` is read at boot**, so `MachineManager.configure` stops a
+  running machine, applies the change and starts it again — otherwise the
+  setting appears to do nothing until something else restarts it.
+- **`$HOME` inside is not your Mac home.** `/home/<you>` is on the machine's own
+  (sparse, ~500G) disk and dies with the machine; your Mac home is mounted
+  separately at `/Users/<you>`. Apple's documentation says otherwise; it is
+  wrong on this point. Anything a user cares about belongs under `/Users/<you>`,
+  which is why `destroy` says so out loud.
+- **What `container`'s first-boot setup leaves out**: `sudo`, a bash login
+  shell, and any dotfiles at all. `MachineManager.polish` adds them after first
+  boot rather than baking a second account into the image, which would collide
+  with the one `container` creates at the same uid. It is idempotent and every
+  step is guarded, because "Install Standard Toolset" re-runs it.
 
 ## Box identity — labels, and the legacy fallback
 
@@ -95,8 +172,17 @@ way. `APPBOX_CONTAINER_BIN` is new — an explicit path to Apple's `container`.
 
 ## Constraints inherited from Apple `container`
 
-- **No systemd as PID 1** — systemd-dependent services (auto-starting sshd,
-  cron) are not supported. Attach and launch daemons manually.
+- **Containers have no systemd as PID 1** — systemd-dependent services
+  (auto-starting sshd, cron) are not supported in a container. Attach and launch
+  daemons manually. **Machines lift this**: they run the image's init, so
+  `systemctl enable --now nginx` works and survives a restart. Verified.
+- **Machines take no extra mounts.** `machine create` has no `--volume`, so
+  `/data` and a private per-box home exist only for containers. This is the one
+  real reason to still create one.
+- **Every machine shares your one Mac home.** There is no isolation between
+  machines, and `rm -rf ~` inside reaches your real files. `--home-mount ro` or
+  `none` is the only mitigation, and it is offered at create time for that
+  reason.
 - **IPs are DHCP** and change across restarts. Never hardcode one.
 - **CLI/daemon version skew breaks networking** (`no available interface
   strategy for network default … variant=nil`). The app detects it and offers a
@@ -106,12 +192,19 @@ way. `APPBOX_CONTAINER_BIN` is new — an explicit path to Apple's `container`.
 
 - **Verify before committing:**
   - `swift build && swift test`
-  - `./build-app.sh --debug --run` to exercise the app itself.
+  - `./build-app.sh --debug --run` to exercise the app itself. Note that `open`
+    on a bundle that is already running just re-activates the old process —
+    quit it first or you will test the previous build.
   - End to end: create real boxes into a throwaway `APPBOX_HOME` /
-    `APPBOX_CONFIG_DIR` (`mktemp -d`), then `destroy <name> --purge`. Arch is
-    the best smoke test — it validates the arm64 image *and* pacman.
+    `APPBOX_CONFIG_DIR` (`mktemp -d`), then destroy them. Arch is the best smoke
+    test — it validates the arm64 image *and* pacman.
   - Rocky is the best **provisioning** smoke test; it is where the dnf
     unavailable-package bug surfaced.
+  - For machines, Ubuntu is the one that matters: it is the recipe that has to
+    add an init system, and the check is
+    `systemctl is-system-running` reporting `running` with no failed units.
+    Changing `MachineImage` means deleting the cached `appbox-machine/<distro>`
+    image (or bumping `recipeVersion`), or the old one is silently reused.
 - **Do not kill the app while an operation is in flight.** A long provision runs
   as a child of the app; terminating the app kills the install mid-transaction.
 - Update `README.md` whenever the interface changes.

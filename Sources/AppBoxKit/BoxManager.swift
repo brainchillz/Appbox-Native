@@ -20,49 +20,13 @@ public struct SilentReporter: ProgressReporter {
     public func detail(_ line: String) {}
 }
 
-/// How confident we are that a container is an appbox-managed box.
-public enum Managed: String, Sendable {
-    /// Created by a labelled appbox — definitive.
-    case labelled
-    /// Created by an older appbox: no label, but it has the appbox shape
-    /// (init process holding it open plus a /data bind mount).
-    case inferred
-    /// Not an appbox box — some other container on the same machine.
-    case foreign
-}
-
-/// The appbox-level view of a container.
-public struct Box: Sendable {
-    public var name: String
-    public var state: BoxState
-    public var image: String
-    public var ipv4: String?
-    public var dataDirectory: URL
-    /// Host directory backing the box user's home, when the box has one.
-    /// Read from the container's actual mounts rather than assumed from
-    /// configuration, so it reflects how the box was really created.
-    public var homeDirectory: URL?
-    public var managed: Managed
-    public var distro: String?
-    /// The Linux account created to mirror the host user, if the box has one.
-    public var user: String?
-    public var cpus: Int
-    public var memory: String
-    public var createdAt: String?
-
-    public var isRunning: Bool { state == .running }
-    /// A box with its own account and persistent home, rather than a bare
-    /// container running as root.
-    public var isFullInstall: Bool { user != nil && homeDirectory != nil }
-    /// Does the host data directory actually exist on disk?
-    public var hasHostData: Bool {
-        FileManager.default.fileExists(atPath: dataDirectory.path)
-    }
-}
-
-/// appbox's policy layer: what a "box" is, how one is created, provisioned and
-/// destroyed. `ContainerClient` knows how to talk to Apple's CLI; this type
-/// knows what appbox means by a box.
+/// appbox's policy layer for **containers** — boxes built from
+/// `container run --init … sleep infinity`, which is what every box was before
+/// Apple shipped container machines. `MachineManager` is the equivalent for
+/// machines, and `BoxService` puts the two behind one door.
+///
+/// `ContainerClient` knows how to talk to Apple's CLI; this type knows what
+/// appbox means by a box.
 public struct BoxManager: Sendable {
     public let client: ContainerClient
     public let config: Configuration
@@ -119,6 +83,7 @@ public struct BoxManager: Sendable {
 
     private func box(from record: ContainerRecord) -> Box {
         Box(
+            kind: .container,
             name: record.id,
             state: record.state,
             image: record.image,
@@ -188,26 +153,14 @@ public struct BoxManager: Sendable {
         }
     }
 
-    /// Resolve which image to create from.
-    ///
-    /// Order: explicit token, then `APPBOX_IMAGE`, then the saved default
-    /// distro. With none of those we refuse rather than silently picking
-    /// Ubuntu — the caller shows the distro menu.
+    /// Resolve which image to create from. See `ImageResolver`, which machines
+    /// share.
     public func resolveImage(for request: CreateRequest) throws
         -> (image: String, distro: String?, viaDefault: String?)
     {
-        if let token = request.token, !token.isEmpty {
-            let distro = Distro.parse(token: token)?.distro.rawValue
-            return (Distro.resolveImage(token: token), distro, nil)
-        }
-        if let forced = config.forcedImage {
-            return (forced, Distro.parse(token: forced)?.distro.rawValue, nil)
-        }
-        if let saved = config.defaultDistro() {
-            let distro = Distro.parse(token: saved)?.distro.rawValue
-            return (Distro.resolveImage(token: saved), distro, saved)
-        }
-        throw AppBoxError.noDistroSpecified(name: request.name)
+        let resolved = try ImageResolver.resolve(
+            token: request.token, config: config, name: request.name)
+        return (resolved.image, resolved.distroName, resolved.viaDefault)
     }
 
     @discardableResult
