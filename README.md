@@ -96,7 +96,7 @@ To build from source you also need **Xcode 26 / Swift 6**.
 
 ## Install
 
-Download `AppBox-0.2.1.dmg` from the
+Download `AppBox-0.3.0.dmg` from the
 [latest release](https://github.com/brainchillz/Appbox-Native/releases/latest),
 open it, and drag **AppBox** to Applications.
 
