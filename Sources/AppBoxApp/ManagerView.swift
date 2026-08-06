@@ -155,17 +155,20 @@ struct BoxDetailView: View {
                 Label("Restart", systemImage: "arrow.clockwise")
             }
 
+            // Short labels: the row holds six buttons, and anything longer
+            // truncates to "Install T…" at the window's minimum width.
             Button {
                 store.provision(box)
             } label: {
-                Label("Install Toolset", systemImage: "shippingbox.and.arrow.backward")
+                Label("Toolset", systemImage: "shippingbox.and.arrow.backward")
             }
+            .help("Install the standard CLI toolset, and finish the account setup")
 
             if box.kind == .machine {
                 Button {
                     store.makeDefault(box)
                 } label: {
-                    Label("Make Default", systemImage: "star")
+                    Label("Default", systemImage: "star")
                 }
                 .disabled(box.isDefault)
                 .help("Use this machine for 'container machine' commands with no -n")
@@ -220,10 +223,13 @@ struct BoxDetailView: View {
         case .none:
             row("Mac home", "Not mounted — this machine cannot see your Mac files")
         case .ro, .rw:
+            // Host and guest paths are the same string — your Mac home is
+            // mounted at its own path inside — so showing an arrow between two
+            // identical paths only reads as a mistake.
             let mount = box.homeMount ?? .rw
             if let home = box.homeDirectory {
                 row(
-                    "Mac home", "\(home.path) → /Users/\(NSUserName())  (\(mount.summary))",
+                    "Mac home", "\(home.path) — the same path inside (\(mount.summary))",
                     monospaced: true, reveal: home)
             }
         }

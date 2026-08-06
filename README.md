@@ -24,7 +24,7 @@ init system baked into images that ship without one, the standard toolset, sudo,
 bash and a furnished home.
 
 <p align="center">
-  <img src="docs/screenshots/menu-bar.png" width="371" alt="The AppBox menu bar dropdown listing two running machines and three stopped containers, each with a state dot and an on/off switch">
+  <img src="docs/screenshots/menu-bar.png" width="372" alt="The AppBox menu bar dropdown listing a running Ubuntu machine with its IP and disk usage, above three stopped containers, each row with a state dot and an on/off switch">
 </p>
 
 <p align="center">
@@ -38,30 +38,42 @@ bash and a furnished home.
 
 ### Create a box
 
-<img src="docs/screenshots/new-box.png" width="478" alt="The New Box window with name, distribution, version, CPU, memory and toolset options">
+<img src="docs/screenshots/new-box.png" width="464" alt="The New Box window with name, distribution and version, a Machine or Container picker, a Mac home mount setting, CPU and memory fields, and a Full Linux install toggle">
 
-Pick a distribution and version, set CPUs and memory. **Full Linux install** is
-on by default — the standard toolset plus an account matching your Mac user,
-with a home directory kept on the host. The version field adapts per
-distribution: it tells you Ubuntu's `latest` means the newest LTS, and that
-Rocky has no `latest` tag at all.
+Pick a distribution and version, then the **kind**: a machine, or a classic
+container. Each choice explains itself, including how your Mac home is
+mounted — read/write, read-only, or not at all. **Full Linux install** is on by
+default: the standard toolset and an init system, plus sudo, a bash login shell
+and dotfiles for the account Linux creates for you.
+
+The version field adapts per distribution — it tells you Ubuntu's `latest`
+means the newest LTS, and that Rocky has no `latest` tag at all.
+
+<img src="docs/screenshots/creating.png" width="383" alt="The dropdown showing a progress row that reads: Creating test… (the first machine of a distro builds an image)">
+
+The first machine of a distro builds a cached image — most images have no init
+system and cannot boot as a machine without one. Every later machine of that
+distro is created in seconds.
 
 ### Manage everything
 
-<img src="docs/screenshots/manager.png" width="876" alt="The management window showing the dev box running, with its user, home directory, host data and console">
+<img src="docs/screenshots/manager.png" width="907" alt="The management window showing the test machine running, with its image, IP, disk usage, Mac home, Linux home, default-machine status and boot console">
 
-Per-box detail: the image it was built from, IP (only assigned while running),
-the box's user account, and both host directories — the persistent home and
-`/data` — each with a reveal-in-Finder button. Boxes built by AppBox run from a
-cached `appbox-base/` image carrying the toolset and the account.
+Per-box detail, adapted to what the box actually is. A machine shows the image
+it was built from, its IP, how much disk it really occupies, your Mac home with
+a reveal-in-Finder button, the separate Linux home on the machine's own disk,
+and whether it is the default machine. A container shows its persistent home
+and `/data` instead. The console below carries the boot log — a real systemd
+boot, on a machine.
 
 ### Open a real shell
 
-<img src="docs/screenshots/shell.png" width="860" alt="The management window beside a Terminal window with a shell inside the dev box">
+<img src="docs/screenshots/shell.png" width="1346" alt="A Terminal window running container machine run, with the prompt daver@test in /Users/daver, beside the AppBox dropdown">
 
 **Open Shell** starts the box if needed and drops you into a real Terminal
-window as your own user, in your own home — not as root. Your profile, your
-scrollback, no embedded-terminal compromises.
+window as your own user — not as root. On a machine you land in your Mac home,
+mounted at the same path inside, so the files you were just editing are right
+there. Your profile, your scrollback, no embedded-terminal compromises.
 
 ---
 
@@ -346,9 +358,6 @@ Releases are signed with a Developer ID certificate and notarized by Apple.
 Not done: SSH access and VS Code Remote, port publishing, export/import, and
 auto-updates. Nested virtualization and custom kernels (`container machine`
 supports both) are in the engine but not yet exposed.
-
-The New Box, manager and shell screenshots above predate machines and show the
-older UI; only the menu bar shot is current.
 
 ## License
 

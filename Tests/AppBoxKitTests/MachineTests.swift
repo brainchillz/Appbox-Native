@@ -304,3 +304,35 @@ struct BoxKindTests {
         #expect(!machine.hasHostData)
     }
 }
+
+@Suite("Log text")
+struct LogTextTests {
+
+    /// A real line from a machine's systemd console, which a plain text view
+    /// would otherwise render as punctuation soup.
+    @Test("strips the colour codes systemd writes")
+    func stripsColour() {
+        let raw = "\u{1B}[0;1;31mFailed to initialize kmod context\u{1B}[0m"
+        #expect(LogText.plain(raw) == "Failed to initialize kmod context")
+    }
+
+    @Test("strips OSC hyperlinks, terminated either way")
+    func stripsHyperlinks() {
+        #expect(LogText.plain("a\u{1B}]8;;http://x\u{07}b") == "ab")
+        #expect(LogText.plain("a\u{1B}]0;title\u{1B}\\b") == "ab")
+    }
+
+    @Test("leaves ordinary text, including brackets, alone")
+    func leavesTextAlone() {
+        let text = "[  OK  ] Started nginx.service — A high performance web server\n"
+        #expect(LogText.plain(text) == text)
+    }
+
+    /// Truncated output is normal when a log is read while it is being written.
+    @Test("an unterminated escape does not run away or crash")
+    func unterminated() {
+        #expect(LogText.plain("ok\u{1B}") == "ok")
+        #expect(LogText.plain("ok\u{1B}[0;1") == "ok")
+        #expect(LogText.plain("ok\u{1B}]8;;unfinished") == "ok")
+    }
+}

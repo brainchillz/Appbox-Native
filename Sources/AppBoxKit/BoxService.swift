@@ -163,13 +163,17 @@ public struct BoxService: Sendable {
     public func isServiceRunning() -> Bool { client.isServiceRunning() }
 
     /// Recent log output for a box, as one blob for the detail pane.
+    ///
+    /// Stripped of ANSI escapes: a machine's console is a systemd boot log
+    /// written in colour, and a plain text view would show the codes rather
+    /// than obey them.
     public func logs(_ box: Box) -> String {
         switch box.kind {
         case .machine:
-            return machines.client.logText(box.name, lines: 200)
+            return LogText.plain(machines.client.logText(box.name, lines: 200))
         case .container:
             guard let result = try? client.run(["logs", box.name]) else { return "" }
-            return result.stdout + result.stderr
+            return LogText.plain(result.stdout + result.stderr)
         }
     }
 }
